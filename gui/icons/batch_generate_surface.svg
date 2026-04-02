@@ -1,0 +1,44 @@
+<svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <linearGradient id="layerOrange" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" style="stop-color:#FFEB3B;stop-opacity:1" />
+            <stop offset="50%" style="stop-color:#FF9800;stop-opacity:1" />
+            <stop offset="100%" style="stop-color:#E65100;stop-opacity:1" />
+        </linearGradient>
+        <linearGradient id="plusGreen" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" style="stop-color:#69F0AE" />
+            <stop offset="100%" style="stop-color:#00C853" />
+        </linearGradient>
+        <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur in="SourceAlpha" stdDeviation="0.5"/>
+            <feOffset dx="1" dy="1"/>
+            <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+    </defs>
+
+    <g filter="url(#shadow)">
+        <!-- 三层地质层 -->
+        <path d="M2 28 L10 18 L26 18 L18 28 Z" 
+              fill="url(#layerOrange)" 
+              stroke="#5D4037" 
+              stroke-width="1"/>
+        <path d="M3 27 L10.5 19 L25 19" fill="none" stroke="white" stroke-opacity="0.6" stroke-width="1"/>
+        
+        <path d="M2 24 L10 14 L26 14 L18 24 Z" 
+              fill="#FFCC80" 
+              stroke="#5D4037" 
+              stroke-width="1"
+              opacity="0.9"/>
+        
+        <path d="M2 20 L10 10 L26 10 L18 20 Z" 
+              fill="#FFE0B2" 
+              stroke="#5D4037" 
+              stroke-width="1"
+              opacity="0.8"/>
+    </g>
+
+    <g transform="translate(22, 6)" filter="url(#shadow)">
+        <rect x="4" y="0" width="4" height="12" fill="url(#plusGreen)" stroke="#1B5E20" stroke-width="0.5"/>
+        <rect x="0" y="4" width="12" height="4" fill="url(#plusGreen)" stroke="#1B5E20" stroke-width="0.5"/>
+    </g>
+</svg>

@@ -1,0 +1,44 @@
+<svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <linearGradient id="sphereGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" style="stop-color:#64B5F6;stop-opacity:1" />
+            <stop offset="100%" style="stop-color:#1976D2;stop-opacity:1" />
+        </linearGradient>
+        <linearGradient id="coneGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" style="stop-color:#81C784;stop-opacity:1" />
+            <stop offset="100%" style="stop-color:#388E3C;stop-opacity:1" />
+        </linearGradient>
+        <linearGradient id="cylinderGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" style="stop-color:#FFB74D;stop-opacity:1" />
+            <stop offset="100%" style="stop-color:#F57C00;stop-opacity:1" />
+        </linearGradient>
+        <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur in="SourceAlpha" stdDeviation="0.5"/>
+            <feOffset dx="1" dy="1"/>
+            <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+    </defs>
+
+    <g filter="url(#shadow)">
+        <!-- 后排左：圆柱体 -->
+        <g transform="translate(10, 10)" opacity="0.8">
+            <rect x="-3" y="-3" width="6" height="6" fill="url(#cylinderGrad)" stroke="#E65100" stroke-width="0.5"/>
+            <ellipse cx="0" cy="-3" rx="3" ry="1" fill="#FF9800"/>
+            <ellipse cx="0" cy="3" rx="3" ry="1" fill="#E65100"/>
+            <rect x="-2" y="-2" width="4" height="4" fill="white" opacity="0.2"/>
+        </g>
+
+        <!-- 后排右：锥体 -->
+        <g transform="translate(22, 10)" opacity="0.8">
+            <path d="M0 -4 L3.5 3 L-3.5 3 Z" fill="url(#coneGrad)" stroke="#1B5E20" stroke-width="0.5"/>
+            <ellipse cx="0" cy="3" rx="3.5" ry="1" fill="#2E7D32"/>
+            <path d="M0 -4 L1.5 -1.5 L-1.5 -1.5 Z" fill="white" opacity="0.3"/>
+        </g>
+
+        <!-- 前排：球体 -->
+        <g transform="translate(16, 16)">
+            <circle cx="0" cy="0" r="4" fill="url(#sphereGrad)" stroke="#0D47A1" stroke-width="0.5"/>
+            <ellipse cx="0" cy="-1.5" rx="3" ry="1.5" fill="white" opacity="0.3"/>
+        </g>
+    </g>
+</svg>
