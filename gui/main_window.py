@@ -12,12 +12,12 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QFileDialog, QDockWidget, QMainWindow, QMessageBox
 
-from core.imported_model import ImportedModel
 from gui.SceneManagerPanel import SceneManagerPanel
 from gui.axis_scale_component import AxisScaleComponent
 from gui.interactive_view import InteractiveView
 from gui.professional_toolbar import ProfessionalToolbar
 from gui.view_axes_2d import ViewAxes2D
+from services import ImportService, SceneService
 
 
 class MainWindow(QMainWindow):
@@ -30,6 +30,9 @@ class MainWindow(QMainWindow):
 
         self._selection_outline_actor = None
         self.initial_workspace_bounds = np.array([0.0, 1000.0, 0.0, 1000.0, 0.0, 1000.0])
+        self.import_service = ImportService()
+        self.scene_service = SceneService()
+        self.project = self.scene_service.project
 
         self._create_menu_bar()
         self._create_status_bar()
@@ -86,6 +89,7 @@ class MainWindow(QMainWindow):
             background_color="white",
         )
         self.setCentralWidget(self.plotter)
+        self.scene_service.set_plotter(self.plotter)
 
         self.toolbar = ProfessionalToolbar(self)
         self.toolbar.set_parent_window(self)
@@ -169,15 +173,22 @@ class MainWindow(QMainWindow):
 
         imported = []
         failures = []
-        for file_path in file_paths:
+        service_imported, service_failures = self.import_service.import_models(
+            file_paths,
+            scene_service=self.scene_service,
+        )
+
+        for model in service_imported:
             try:
-                mesh = pv.read(file_path)
-                model = ImportedModel(mesh=mesh, file_path=file_path, name=Path(file_path).stem)
-                model.create_actor(self.plotter)
                 self.scene_manager.add_object(model, category="模型")
                 imported.append(model)
             except Exception as exc:
-                failures.append(f"{Path(file_path).name}: {exc}")
+                model.cleanup(self.plotter)
+                self.scene_service.remove_object(model.object_id, cleanup=False)
+                failures.append(f"{Path(model.file_path).name}: {exc}")
+
+        for file_path, exc in service_failures:
+            failures.append(f"{Path(file_path).name}: {exc}")
 
         if imported:
             self._fit_scene_to_models()
@@ -199,7 +210,7 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "导入失败", "\n".join(failures) or "未能读取所选文件")
 
     def _fit_scene_to_models(self):
-        models = self.scene_manager.get_objects_by_type("model")
+        models = self.scene_service.get_objects_by_type("model")
         if not models:
             return
 

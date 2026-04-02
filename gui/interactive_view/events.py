@@ -16,10 +16,18 @@ class EventHandler:
         view.setFocus()
 
         button = event.button()
-        if button == Qt.MouseButton.LeftButton:
+        modifiers = event.modifiers()
+
+        if button == Qt.MouseButton.LeftButton and modifiers & Qt.KeyboardModifier.ShiftModifier:
+            view._is_panning = True
+            view.setCursor(Qt.CursorShape.SizeAllCursor)
+        elif button == Qt.MouseButton.LeftButton:
             view._is_rotating = True
             view.setCursor(Qt.CursorShape.ClosedHandCursor)
         elif button == Qt.MouseButton.MiddleButton:
+            view._is_panning = True
+            view.setCursor(Qt.CursorShape.SizeAllCursor)
+        elif button == Qt.MouseButton.RightButton:
             view._is_zooming = True
             view.setCursor(Qt.CursorShape.SizeVerCursor)
 
@@ -34,6 +42,8 @@ class EventHandler:
 
         if view._is_rotating:
             CameraController.handle_rotation(view, delta)
+        elif view._is_panning:
+            CameraController.handle_pan(view, delta)
         elif view._is_zooming:
             CameraController.handle_zoom_drag(view, delta)
 

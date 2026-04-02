@@ -7,6 +7,48 @@ import numpy as np
 
 class CameraController:
     """摄像机控制器 - 处理旋转、平移、缩放等操作"""
+
+    @staticmethod
+    def _get_workspace_metrics(view) -> tuple[float, float]:
+        bounds = view.workspace_bounds
+        dx = max(float(bounds[1] - bounds[0]), 1e-6)
+        dy = max(float(bounds[3] - bounds[2]), 1e-6)
+        dz = max(float(bounds[5] - bounds[4]), 1e-6)
+        diagonal = float(np.sqrt(dx**2 + dy**2 + dz**2))
+        smallest_span = float(min(dx, dy, dz))
+        return diagonal, smallest_span
+
+    @staticmethod
+    def _get_distance_limits(view) -> tuple[float, float]:
+        diagonal, smallest_span = CameraController._get_workspace_metrics(view)
+        initial_distance = max(float(view._calculate_initial_distance()), 1.0)
+        min_distance = max(diagonal * 0.0005, smallest_span * 0.001, 0.05)
+        max_distance = initial_distance * 5.0
+        return min_distance, max_distance
+
+    @staticmethod
+    def _update_clipping_range(view, camera=None):
+        camera = camera or view.renderer.GetActiveCamera()
+        position = np.array(camera.GetPosition(), dtype=float)
+        focal_point = np.array(camera.GetFocalPoint(), dtype=float)
+        distance = max(float(np.linalg.norm(position - focal_point)), 1e-6)
+        diagonal, _ = CameraController._get_workspace_metrics(view)
+
+        near_clip = max(distance * 0.001, diagonal * 1e-6, 1e-4)
+        far_clip = max(distance * 20.0, diagonal * 10.0, near_clip * 1000.0)
+        camera.SetClippingRange(near_clip, far_clip)
+
+    @staticmethod
+    def _finalize_camera_update(view, emit: bool = True):
+        camera = view.renderer.GetActiveCamera()
+        position = np.array(camera.GetPosition(), dtype=float)
+        focal_point = np.array(camera.GetFocalPoint(), dtype=float)
+        view._camera_distance = max(float(np.linalg.norm(position - focal_point)), 1e-6)
+        view._orbit_center = focal_point.copy()
+        CameraController._update_clipping_range(view, camera)
+        view.render()
+        if emit:
+            view.view_changed.emit()
     
     @staticmethod
     def reset_view_to_initial(view):
@@ -58,15 +100,8 @@ class CameraController:
         
         # 设置投影模式
         camera.SetParallelProjection(view._is_orthographic)
-        
-        # 【关键修复】动态设置裁剪范围，确保模型完全可见
-        # 近裁剪：避免摄像机太近时裁剪掉模型
-        near_clip = distance * 0.001  # 距离的千分之一
-        # 远裁剪：确保远处的模型完全可见，设置为摄像机距离的3倍
-        far_clip = distance * 3.0
-        camera.SetClippingRange(near_clip, far_clip)
-        
-        view.render()
+
+        CameraController._finalize_camera_update(view, emit=False)
     
     @staticmethod
     def handle_rotation(view, delta: QPoint):
@@ -153,8 +188,8 @@ class CameraController:
         new_view_up = new_view_up / np.linalg.norm(new_view_up)
         
         camera.SetViewUp(new_view_up)
-        
-        view.render()
+
+        CameraController._finalize_camera_update(view, emit=False)
     
     @staticmethod
     def handle_pan(view, delta: QPoint):
@@ -198,13 +233,14 @@ class CameraController:
         
         # 更新轨道中心
         view._orbit_center = new_center
-        
-        view.render()
+
+        CameraController._finalize_camera_update(view, emit=False)
     
     @staticmethod
     def handle_zoom_wheel(view, zoom_factor: float):
         """处理滚轮缩放"""
         camera = view.renderer.GetActiveCamera()
+        zoom_factor = max(float(zoom_factor), 0.05)
         
         center = np.array(camera.GetFocalPoint())
         position = np.array(camera.GetPosition())
@@ -212,32 +248,28 @@ class CameraController:
         # 计算当前距离
         direction = position - center
         distance = np.linalg.norm(direction)
-        
-        # 计算初始距离（基于当前工作空间）
-        initial_distance = view._calculate_initial_distance()
+        if distance < 1e-6:
+            return
         
         # 应用缩放
-        new_distance = distance / zoom_factor
-        
-        # 仅限制最大距离，不再限制最小距离
-        max_distance = initial_distance * 5.0
-        new_distance = min(new_distance, max_distance)
+        min_distance, max_distance = CameraController._get_distance_limits(view)
+        new_distance = np.clip(distance / zoom_factor, min_distance, max_distance)
         
         # 更新摄像机位置
         direction_normalized = direction / distance
         new_position = center + direction_normalized * new_distance
         
         camera.SetPosition(new_position)
-        view._camera_distance = new_distance
-        
-        view.render()
+
+        CameraController._finalize_camera_update(view, emit=False)
     
     @staticmethod
     def handle_zoom_drag(view, delta: QPoint):
-        """处理拖拽缩放（Alt + 右键）"""
-        # 垂直移动控制缩放
+        """处理右键拖拽缩放"""
+        # 使用指数缩放更接近 ParaView 的右键拖拽手感，且缩放因子始终为正
         zoom_sensitivity = 0.01
-        zoom_factor = 1.0 - delta.y() * zoom_sensitivity
+        zoom_factor = float(np.exp(-delta.y() * zoom_sensitivity))
+        zoom_factor = np.clip(zoom_factor, 0.2, 5.0)
         
         CameraController.handle_zoom_wheel(view, zoom_factor)
     
@@ -262,8 +294,7 @@ class CameraController:
         camera.SetViewUp(camera_info['view_up'])
         view._camera_distance = camera_info.get('distance', view._camera_distance)
         view._orbit_center = camera_info.get('orbit_center', view._orbit_center)
-        view.render()
-        view.view_changed.emit()
+        CameraController._finalize_camera_update(view)
     
     @staticmethod
     def set_view(view, view_name: str):
@@ -321,9 +352,8 @@ class CameraController:
         
         # 更新轨道中心
         view._orbit_center = center
-        
-        view.render()
-        view.view_changed.emit()
+
+        CameraController._finalize_camera_update(view)
 
     @staticmethod
     def focus_on_point(view, target_point: np.ndarray, zoom_factor: float = 0.5):
@@ -369,9 +399,8 @@ class CameraController:
         # 更新轨道中心
         view._orbit_center = target_point.copy()
         view._camera_distance = new_distance
-        
-        view.render()
-        view.view_changed.emit()
+
+        CameraController._finalize_camera_update(view)
     
     @staticmethod
     def focus_on_plane(view, surface, distance_factor: float = 1.5):
@@ -423,9 +452,8 @@ class CameraController:
         # 更新轨道中心和距离
         view._orbit_center = center.copy()
         view._camera_distance = target_distance
-        
-        view.render()
-        view.view_changed.emit()
+
+        CameraController._finalize_camera_update(view)
     
     @staticmethod
     def focus_on_plane_by_coordinate(view, axis: str, coordinate: float, distance_factor: float = 1.5):
@@ -487,12 +515,10 @@ class CameraController:
         # 更新轨道中心和距离
         view._orbit_center = center.copy()
         view._camera_distance = target_distance
-        
-        view.render()
-        view.view_changed.emit()
+
+        CameraController._finalize_camera_update(view)
         
         # 发送状态消息
         if hasattr(view, 'status_message'):
             view.status_message.emit(f'聚焦到 {axis.upper()}={coordinate:.2f} 的面')
     
-

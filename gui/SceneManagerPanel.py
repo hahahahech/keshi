@@ -1337,6 +1337,8 @@ class SceneManagerPanel(QWidget):
                     print(f"✓ 对象已自清理")
                 else:
                     print(f"⚠ 对象 {type(item.data_object)} 没有cleanup方法")
+            if self.parent_window and hasattr(self.parent_window, "scene_service"):
+                self.parent_window.scene_service.remove_object(obj_id, cleanup=False)
             # 第二步：从场景树中移除节点
             parent = item.parent()
             if parent:
@@ -1452,4 +1454,3 @@ class SceneManagerPanel(QWidget):
             print(f"✗ 更新场景面板失败: {e}")
             import traceback
             traceback.print_exc()
-
