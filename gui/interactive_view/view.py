@@ -649,6 +649,17 @@ class InteractiveView(QtInteractor):
     def resizeEvent(self, event):
         """窗口大小改变事件"""
         super().resizeEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        """双击拾取并显示世界坐标。"""
+        try:
+            point = self.pick_mouse_position()
+            if point is not None and hasattr(self, "status_message"):
+                x, y, z = [float(value) for value in point]
+                self.status_message.emit(f"拾取坐标：X={x:.3f}, Y={y:.3f}, Z={z:.3f}")
+        except Exception:
+            pass
+        super().mouseDoubleClickEvent(event)
     
     def clear_vertex_highlight(self):
         """清除顶点高亮"""
@@ -657,4 +668,3 @@ class InteractiveView(QtInteractor):
                 self._vertex_picker.clear_highlight()
         except Exception as e:
             print(f"清除顶点高亮失败: {e}")
-

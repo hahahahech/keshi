@@ -1,5 +1,5 @@
 """
-应用启动入口
+应用启动入口。
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from gui.main_window import MainWindow
 
 def main() -> int:
     app = QApplication(sys.argv)
-    app.setApplicationName("三维可视化软件")
+    app.setApplicationName("三维正反演可视化软件")
 
     window = MainWindow()
     window.show()
