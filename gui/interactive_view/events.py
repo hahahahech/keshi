@@ -18,6 +18,14 @@ class EventHandler:
         button = event.button()
         modifiers = event.modifiers()
 
+        if view.is_polyline_drawing():
+            if button == Qt.MouseButton.LeftButton and not (modifiers & Qt.KeyboardModifier.ShiftModifier):
+                view.handle_polyline_click(event.pos())
+                return
+            if button == Qt.MouseButton.RightButton:
+                view.pop_polyline_point()
+                return
+
         if button == Qt.MouseButton.LeftButton and modifiers & Qt.KeyboardModifier.ShiftModifier:
             view._is_panning = True
             view.setCursor(Qt.CursorShape.SizeAllCursor)
@@ -46,6 +54,8 @@ class EventHandler:
             CameraController.handle_pan(view, delta)
         elif view._is_zooming:
             CameraController.handle_zoom_drag(view, delta)
+        elif view.is_polyline_drawing():
+            view.handle_polyline_hover(current_pos)
 
         view._last_mouse_pos = current_pos
         view.view_changed.emit()
@@ -67,6 +77,24 @@ class EventHandler:
 
     @staticmethod
     def key_press_event(view, event):
+        if view.is_polyline_drawing():
+            key = event.key()
+            if key == Qt.Key.Key_Escape:
+                view.cancel_polyline_drawing()
+                event.accept()
+                return
+            if key in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete):
+                view.pop_polyline_point()
+                event.accept()
+                return
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                try:
+                    view.finish_polyline_drawing()
+                except Exception:
+                    pass
+                event.accept()
+                return
+
         from pyvistaqt import QtInteractor
 
         QtInteractor.keyPressEvent(view, event)

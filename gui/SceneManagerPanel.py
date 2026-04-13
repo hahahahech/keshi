@@ -21,6 +21,7 @@ from PyQt6.QtGui import QAction
 ROOT_LABELS = {
     "dataset": "数据集",
     "slice": "切片",
+    "section": "剖面",
     "isosurface": "等值面",
     "clip": "裁剪",
     "helper": "辅助对象",
@@ -29,6 +30,7 @@ ROOT_LABELS = {
 OBJECT_TYPE_LABELS = {
     "dataset": "数据集",
     "slice": "切片",
+    "section": "剖面",
     "isosurface": "等值面",
     "clip": "裁剪",
     "helper": "辅助对象",

@@ -256,15 +256,22 @@ class SceneService:
 
         results: list[DatasetSceneObject] = []
         for position in positions:
-            results.append(
-                self.create_axis_slice(
-                    source_object_id,
-                    axis,
-                    float(position),
-                    render=render,
-                    add_to_scene=add_to_scene,
+            try:
+                results.append(
+                    self.create_axis_slice(
+                        source_object_id,
+                        axis,
+                        float(position),
+                        render=render,
+                        add_to_scene=add_to_scene,
+                    )
                 )
-            )
+            except ValueError as exc:
+                if str(exc) != "该操作结果为空。":
+                    raise
+                continue
+        if not results:
+            raise ValueError("指定范围内未生成任何有效切片，请调整起点、终点或步长。")
         return results
 
     def create_orthogonal_slice(
@@ -315,6 +322,62 @@ class SceneService:
             scene_object,
             result,
             object_type="slice",
+            name=name,
+            render=render,
+            add_to_scene=add_to_scene,
+            object_id=object_id,
+            parameters=parameters,
+        )
+
+    def create_polyline_section(
+        self,
+        source_object_id: str,
+        polyline_points,
+        *,
+        top_z: float,
+        bottom_z: float,
+        line_step: float = 25.0,
+        vertical_samples: int = 20,
+        render: bool = True,
+        add_to_scene: bool = True,
+        object_id: str | None = None,
+    ):
+        scene_object = self._require_object(source_object_id)
+        if isinstance(scene_object.dataset, PointSetDataset):
+            raise ValueError("点集数据请先转规则网格后再生成折线剖面。")
+        if line_step <= 0:
+            raise ValueError("沿线步长必须大于 0。")
+        if int(vertical_samples) < 2:
+            raise ValueError("垂向采样层数至少为 2。")
+
+        points = self._normalize_polyline_points(polyline_points)
+        samples, distances = self._resample_polyline_points(points, float(line_step))
+        if np.isclose(top_z, bottom_z):
+            raise ValueError("顶部 Z 和底部 Z 不能相同。")
+
+        vertical_levels = np.linspace(float(top_z), float(bottom_z), int(vertical_samples))
+        x_coords = np.repeat(samples[:, 0][None, :], len(vertical_levels), axis=0)
+        y_coords = np.repeat(samples[:, 1][None, :], len(vertical_levels), axis=0)
+        z_coords = np.repeat(vertical_levels[:, None], len(samples), axis=1)
+        fence = pv.StructuredGrid(x_coords, y_coords, z_coords)
+        fence.point_data["profile_distance"] = np.repeat(distances[None, :], len(vertical_levels), axis=0).ravel(order="F")
+        fence.point_data["elevation"] = z_coords.ravel(order="F")
+
+        sampled = fence.sample(scene_object.data)
+        result = sampled.extract_surface()
+        name = f"{scene_object.name} 折线剖面"
+        parameters = {
+            "kind": "polyline",
+            "points": [[float(value) for value in point] for point in points.tolist()],
+            "top_z": float(top_z),
+            "bottom_z": float(bottom_z),
+            "line_step": float(line_step),
+            "vertical_samples": int(vertical_samples),
+        }
+        return self._add_derived_object(
+            scene_object,
+            result,
+            object_type="section",
             name=name,
             render=render,
             add_to_scene=add_to_scene,
@@ -543,6 +606,17 @@ class SceneService:
                     render=False,
                     object_id=definition.get("object_id"),
                 )
+            elif object_type == "section":
+                scene_object = self.create_polyline_section(
+                    source_object_id,
+                    parameters["points"],
+                    top_z=parameters["top_z"],
+                    bottom_z=parameters["bottom_z"],
+                    line_step=parameters["line_step"],
+                    vertical_samples=parameters["vertical_samples"],
+                    render=False,
+                    object_id=definition.get("object_id"),
+                )
             elif object_type == "isosurface":
                 scene_object = self.create_isosurface(
                     source_object_id,
@@ -585,6 +659,45 @@ class SceneService:
             raise KeyError(f"未知场景对象：{object_id}")
         return scene_object
 
+    def _normalize_polyline_points(self, polyline_points) -> np.ndarray:
+        points = np.asarray(polyline_points, dtype=float)
+        if points.ndim != 2 or points.shape[0] < 2:
+            raise ValueError("折线至少需要两个点。")
+        if points.shape[1] == 2:
+            points = np.column_stack([points, np.zeros(points.shape[0], dtype=float)])
+        if points.shape[1] != 3:
+            raise ValueError("折线点必须是二维或三维坐标。")
+        return points
+
+    def _resample_polyline_points(self, points: np.ndarray, line_step: float) -> tuple[np.ndarray, np.ndarray]:
+        xy_points = points[:, :2]
+        segment_lengths = np.linalg.norm(np.diff(xy_points, axis=0), axis=1)
+        total_length = float(segment_lengths.sum())
+        if total_length <= 1e-9:
+            raise ValueError("折线长度过短，无法生成剖面。")
+
+        cumulative = np.concatenate([[0.0], np.cumsum(segment_lengths)])
+        sample_distances = np.arange(0.0, total_length + line_step * 0.5, line_step, dtype=float)
+        if sample_distances.size == 0 or sample_distances[-1] < total_length:
+            sample_distances = np.append(sample_distances, total_length)
+
+        samples = []
+        for distance in sample_distances:
+            index = min(np.searchsorted(cumulative, distance, side="right") - 1, len(segment_lengths) - 1)
+            segment_length = max(float(segment_lengths[index]), 1e-9)
+            ratio = (float(distance) - float(cumulative[index])) / segment_length
+            point = points[index] + (points[index + 1] - points[index]) * ratio
+            samples.append(point)
+        return np.asarray(samples, dtype=float), sample_distances
+
+    def _result_has_geometry(self, result: pv.DataSet) -> bool:
+        if isinstance(result, pv.MultiBlock):
+            for block in result:
+                if block is not None and getattr(block, "n_points", 0) > 0:
+                    return True
+            return False
+        return getattr(result, "n_points", 0) > 0
+
     def _add_derived_object(
         self,
         source_object,
@@ -597,7 +710,7 @@ class SceneService:
         add_to_scene: bool = True,
         object_id: str | None = None,
     ):
-        if getattr(result, "n_points", 0) == 0:
+        if not self._result_has_geometry(result):
             raise ValueError("该操作结果为空。")
         dataset = create_dataset_from_pyvista(
             result,

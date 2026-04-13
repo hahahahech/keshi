@@ -111,6 +111,12 @@ class MainWindow(QMainWindow):
         self.scene_service.set_plotter(self.plotter)
         if hasattr(self.plotter, "status_message"):
             self.plotter.status_message.connect(self.statusBar().showMessage)
+        if hasattr(self.plotter, "polyline_changed"):
+            self.plotter.polyline_changed.connect(self._on_polyline_points_changed)
+        if hasattr(self.plotter, "polyline_finished"):
+            self.plotter.polyline_finished.connect(self._on_polyline_finished)
+        if hasattr(self.plotter, "polyline_cancelled"):
+            self.plotter.polyline_cancelled.connect(self._on_polyline_cancelled)
 
         self.toolbar = ProfessionalToolbar(self)
         self.toolbar.action_triggered.connect(self._on_toolbar_action)
@@ -151,6 +157,9 @@ class MainWindow(QMainWindow):
         self.slice_panel.axisBatchSliceRequested.connect(self._create_axis_slice_batch)
         self.slice_panel.orthogonalSliceRequested.connect(self._create_orthogonal_slice)
         self.slice_panel.planeSliceRequested.connect(self._create_plane_slice)
+        self.slice_panel.polylineDrawingRequested.connect(self._start_polyline_drawing)
+        self.slice_panel.polylineDrawingCancelled.connect(self._cancel_polyline_drawing)
+        self.slice_panel.polylineSectionRequested.connect(self._create_polyline_section)
         self.slice_panel.clearDerivedRequested.connect(self.clear_derived_objects)
         self.slice_dock = self._add_dock("切片窗口", self.slice_panel, Qt.DockWidgetArea.RightDockWidgetArea)
         self.slice_window = self.slice_dock
@@ -435,10 +444,13 @@ class MainWindow(QMainWindow):
         self.plotter.render()
 
     def on_object_selected(self, object_id: str):
+        previous_selected_id = self.selected_object_id
         self.selected_object_id = object_id
         scene_object = self.scene_service.get_object(object_id)
         if scene_object is None:
             return
+        if previous_selected_id and previous_selected_id != object_id and self.plotter.is_polyline_drawing():
+            self.plotter.cancel_polyline_drawing()
         source_object = (
             self.scene_service.get_object(scene_object.source_object_id)
             if scene_object.source_object_id
@@ -567,6 +579,7 @@ class MainWindow(QMainWindow):
             self.slice_panel.set_scene_object(None)
             self.clip_panel.set_scene_object(None)
             self.clear_selection_outline()
+            self.plotter.cancel_polyline_drawing()
 
     def clear_derived_objects(self, source_object_id: str | None = None):
         if source_object_id == "":
@@ -578,6 +591,7 @@ class MainWindow(QMainWindow):
             self.property_panel.set_scene_object(None)
             self.slice_panel.set_scene_object(None)
             self.clip_panel.set_scene_object(None)
+            self.plotter.cancel_polyline_drawing()
         self.clear_selection_outline()
         self.statusBar().showMessage("派生对象已清除", 2500)
 
@@ -636,6 +650,39 @@ class MainWindow(QMainWindow):
             self._on_created_objects_ready,
         )
 
+    def _start_polyline_drawing(self, object_id: str, params: dict):
+        scene_object = self.scene_service.get_object(object_id)
+        if scene_object is None:
+            return
+        clip_bounds = np.asarray(scene_object.bounds, dtype=float) if scene_object.bounds is not None else None
+        self.plotter.set_view("top")
+        self.plotter.start_polyline_drawing(params["draw_z"], clip_bounds=clip_bounds)
+        self.slice_panel.set_polyline_state(True, 0)
+        self.statusBar().showMessage(f"已开始为 {scene_object.name} 绘制折线剖面", 3000)
+
+    def _cancel_polyline_drawing(self):
+        self.plotter.cancel_polyline_drawing()
+
+    def _create_polyline_section(self, object_id: str, params: dict):
+        points = self.plotter.get_polyline_points()
+        if len(points) < 2:
+            QMessageBox.information(self, "折线剖面", "请先在主视图中绘制至少两个折线点。")
+            return
+        self._run_worker(
+            "正在生成折线剖面...",
+            lambda: self.scene_service.create_polyline_section(
+                object_id,
+                points,
+                top_z=params["top_z"],
+                bottom_z=params["bottom_z"],
+                line_step=params["line_step"],
+                vertical_samples=params["vertical_samples"],
+                render=False,
+                add_to_scene=False,
+            ),
+            self._on_polyline_section_ready,
+        )
+
     def _create_clip(self, object_id: str, bounds):
         self._run_worker(
             "正在应用裁剪...",
@@ -684,6 +731,19 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"已生成：{scene_objects[0].name}", 3500)
         else:
             self.statusBar().showMessage(f"已批量生成 {len(scene_objects)} 个切片对象", 4000)
+
+    def _on_polyline_section_ready(self, result):
+        self._on_created_objects_ready(result)
+        self.plotter.cancel_polyline_drawing()
+
+    def _on_polyline_points_changed(self, point_count: int):
+        self.slice_panel.set_polyline_state(self.plotter.is_polyline_drawing(), point_count)
+
+    def _on_polyline_finished(self, points):
+        self.slice_panel.set_polyline_state(False, len(points))
+
+    def _on_polyline_cancelled(self):
+        self.slice_panel.set_polyline_state(False, 0)
 
     def _update_view_axes_position(self):
         if hasattr(self, "view_axes") and hasattr(self, "plotter"):

@@ -8,6 +8,48 @@ from typing import Optional
 
 class CoordinateConverter:
     """坐标转换器 - 用于屏幕坐标到世界坐标的转换"""
+
+    @staticmethod
+    def screen_to_horizontal_plane(
+        view,
+        screen_pos: QPoint,
+        z_value: float,
+        clip_to_bounds: bool = True,
+    ) -> Optional[np.ndarray]:
+        """将屏幕坐标投影到指定 Z 高程的水平平面。"""
+        try:
+            renderer = view.renderer
+            width = max(view.width(), 1)
+            height = max(view.height(), 1)
+            vtk_x = screen_pos.x()
+            vtk_y = height - screen_pos.y() - 1
+
+            renderer.SetDisplayPoint(vtk_x, vtk_y, 0.0)
+            renderer.DisplayToWorld()
+            near_world = renderer.GetWorldPoint()
+            renderer.SetDisplayPoint(vtk_x, vtk_y, 1.0)
+            renderer.DisplayToWorld()
+            far_world = renderer.GetWorldPoint()
+
+            if abs(near_world[3]) < 1e-12 or abs(far_world[3]) < 1e-12:
+                return None
+
+            near_point = np.array(near_world[:3], dtype=float) / near_world[3]
+            far_point = np.array(far_world[:3], dtype=float) / far_world[3]
+            ray = far_point - near_point
+            if abs(ray[2]) < 1e-12:
+                return None
+
+            factor = (float(z_value) - near_point[2]) / ray[2]
+            world_pos = near_point + ray * factor
+
+            if clip_to_bounds:
+                world_pos[0] = np.clip(world_pos[0], view.workspace_bounds[0], view.workspace_bounds[1])
+                world_pos[1] = np.clip(world_pos[1], view.workspace_bounds[2], view.workspace_bounds[3])
+                world_pos[2] = np.clip(world_pos[2], view.workspace_bounds[4], view.workspace_bounds[5])
+            return world_pos
+        except Exception:
+            return None
     
     @staticmethod
     def screen_to_world_raycast(view, screen_pos: QPoint) -> Optional[np.ndarray]:
@@ -225,4 +267,3 @@ class CoordinateConverter:
             print(f"平面坐标转世界坐标失败: {e}")
             return None
    
-
