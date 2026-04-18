@@ -55,13 +55,6 @@ class InteractiveView(QtInteractor):
         # 投影模式：True=正交投影，False=透视投影
         self._is_orthographic = False
         
-        # 显示状态
-        self._show_grid = False  # 是否显示网格
-        self._show_origin_axes = False  # 是否显示原点坐标轴
-        self._grid_actor = None  # 网格actor
-        self._origin_axes_actor = None  # 原点坐标轴actor
-        self._grid_spacing = 10.0  # 网格间距
-        
         # 模式选择
         self._current_mode = 'object'  # 当前模式：'object'（物体模式）或 'edit'（编辑模式）
         
@@ -93,9 +86,6 @@ class InteractiveView(QtInteractor):
         CameraController.setup_camera(self)
         
         
-        # 初始化网格和坐标轴（默认不显示）
-        self._update_grid()
-        self._update_origin_axes()
         # 保留这些状态变量（用于向后兼容）
         self._current_mode = 'observer'
         self._current_tool = None
@@ -169,49 +159,6 @@ class InteractiveView(QtInteractor):
         mesh.lines = np.array(lines_array, dtype=np.int32)
         return mesh
 
-    def _create_grid_mesh(self, bounds: np.ndarray, grid_spacing: float = 10.0, z: float = 0.0) -> pv.PolyData:
-        """创建参考网格"""
-        x_min, x_max = bounds[0], bounds[1]
-        y_min, y_max = bounds[2], bounds[3]
-
-        vertices = []
-        lines_array = []
-
-        x_values = np.arange(x_min, x_max + grid_spacing, grid_spacing)
-        for x in x_values:
-            x = min(x, x_max)
-            start_idx = len(vertices)
-            vertices.append([x, y_min, z])
-            vertices.append([x, y_max, z])
-            lines_array.extend([2, start_idx, start_idx + 1])
-
-        y_values = np.arange(y_min, y_max + grid_spacing, grid_spacing)
-        for y in y_values:
-            y = min(y, y_max)
-            start_idx = len(vertices)
-            vertices.append([x_min, y, z])
-            vertices.append([x_max, y, z])
-            lines_array.extend([2, start_idx, start_idx + 1])
-
-        mesh = pv.PolyData(np.array(vertices))
-        mesh.lines = np.array(lines_array, dtype=np.int32)
-        return mesh
-
-    def _create_origin_axes_mesh(self, bounds: np.ndarray) -> pv.PolyData:
-        """创建原点坐标轴辅助网格"""
-        x_min, x_max = bounds[0], bounds[1]
-        y_min, y_max = bounds[2], bounds[3]
-        axis_length = min(x_max - x_min, y_max - y_min) * 0.6
-
-        vertices = np.array([
-            [0.0, 0.0, 0.0],
-            [axis_length, 0.0, 0.0],
-            [0.0, axis_length, 0.0],
-        ])
-        mesh = pv.PolyData(vertices)
-        mesh.lines = np.array([2, 0, 1, 2, 0, 2], dtype=np.int32)
-        return mesh
-
     def _create_basement_surface_mesh(self, bounds: np.ndarray, resolution: int = 20) -> pv.PolyData:
         """创建底面平面网格"""
         x_min, x_max = bounds[0], bounds[1]
@@ -274,12 +221,6 @@ class InteractiveView(QtInteractor):
                     pass
             self._workspace_bounds_actor = []
         
-        # 更新网格和坐标轴（如果已显示）
-        if self._show_grid:
-            self._update_grid()
-        if self._show_origin_axes:
-            self._update_origin_axes()
-            
         # 更新垂直坐标轴
         # if hasattr(self, '_vertical_axis_controller'):
         #     self._vertical_axis_controller.update_from_workspace(self.workspace_bounds)
@@ -449,80 +390,6 @@ class InteractiveView(QtInteractor):
         """安全重置视图 - 新的专用方法"""
         CameraController.reset_view_to_initial(self)
     
-    # ========== 网格和坐标轴控制 ==========
-    
-    def set_show_grid(self, show: bool):
-        """设置是否显示网格"""
-        self._show_grid = show
-        self._update_grid()
-        self.render()
-        self.view_changed.emit()
-    
-    def get_show_grid(self) -> bool:
-        """获取网格显示状态"""
-        return self._show_grid
-    
-    def toggle_grid(self):
-        """切换网格显示状态"""
-        self.set_show_grid(not self._show_grid)
-    
-    def set_grid_spacing(self, spacing: float):
-        """设置网格间距"""
-        if spacing <= 0:
-            raise ValueError("网格间距必须大于0")
-        self._grid_spacing = spacing
-        if self._show_grid:
-            self._update_grid()
-            self.render()
-            self.view_changed.emit()
-    
-    def get_grid_spacing(self) -> float:
-        """获取网格间距"""
-        return self._grid_spacing
-    
-    def _update_grid(self):
-        """更新网格显示"""
-
-        if self._grid_actor is not None:
-            try:
-                self.remove_actor(self._grid_actor)
-            except:
-                pass
-            self._grid_actor = None
-        # 如果显示网格，创建新的网格
-        if self._show_grid:
-            grid_mesh = self._create_grid_mesh(self.workspace_bounds, self._grid_spacing, z=0.0)
-            self._grid_actor = self.add_mesh(
-                grid_mesh,
-                color='lightgray',
-                line_width=0.5,
-                opacity=0.5,
-                name='grid'
-            )
-            # 网格只作参考，禁用拾取
-            try:
-                self._grid_actor.PickableOff()
-            except Exception:
-                try:
-                    self._grid_actor.SetPickable(False)
-                except Exception:
-                    pass
-    
-    def set_show_origin_axes(self, show: bool):
-        """设置是否显示原点坐标轴"""
-        self._show_origin_axes = show
-        self._update_origin_axes()
-        self.render()
-        self.view_changed.emit()
-    
-    def get_show_origin_axes(self) -> bool:
-        """获取原点坐标轴显示状态"""
-        return self._show_origin_axes
-    
-    def toggle_origin_axes(self):
-        """切换原点坐标轴显示状态"""
-        self.set_show_origin_axes(not self._show_origin_axes)
-    
     def toggle_vertical_axis(self):
         """切换垂直坐标轴显示状态"""
         # self.set_show_vertical_axis(not self._show_vertical_axis)
@@ -540,77 +407,7 @@ class InteractiveView(QtInteractor):
         """获取垂直坐标轴显示状态"""
         # return self._show_vertical_axis
         return False  # 垂直坐标轴已禁
-    def _update_origin_axes(self):
-        """更新原点坐标轴显示"""
-        # 移除旧的坐标轴
-        if self._origin_axes_actor is not None:
-            try:
-                # 如果是列表，分别移除每个actor
-                if isinstance(self._origin_axes_actor, list):
-                    for actor in self._origin_axes_actor:
-                        try:
-                            self.remove_actor(actor)
-                        except:
-                            pass
-                else:
-                    self.remove_actor(self._origin_axes_actor)
-            except:
-                pass
-            self._origin_axes_actor = None
-        
-        # 如果显示坐标轴，创建新的坐标轴
-        if self._show_origin_axes:
-            axes_mesh = self._create_origin_axes_mesh(self.workspace_bounds)
-            # X轴用红色，Y轴用绿色
-            # 由于PolyData不支持不同颜色，我们分别创建两个actor
-            # X轴
-            x_axis_vertices = np.array([
-                [0.0, 0.0, 0.0],
-                axes_mesh.points[1]  # X轴端点
-            ])
-            x_axis_mesh = pv.PolyData(x_axis_vertices)
-            x_axis_mesh.lines = np.array([2, 0, 1], dtype=np.int32)
-            
-            # Y轴
-            y_axis_vertices = np.array([
-                [0.0, 0.0, 0.0],
-                axes_mesh.points[2]  # Y轴端点
-            ])
-            y_axis_mesh = pv.PolyData(y_axis_vertices)
-            y_axis_mesh.lines = np.array([2, 0, 1], dtype=np.int32)
-            
-            # 添加X轴（红色）
-            x_actor = self.add_mesh(
-                x_axis_mesh,
-                color='red',
-                line_width=4.0,  # 增大线条宽度
-                name='origin_axis_x'
-            )
-            try:
-                x_actor.PickableOff()
-            except Exception:
-                try:
-                    x_actor.SetPickable(False)
-                except Exception:
-                    pass
-            
-            # 添加Y轴（绿色）
-            y_actor = self.add_mesh(
-                y_axis_mesh,
-                color='green',
-                line_width=4.0,  # 增大线条宽度
-                name='origin_axis_y'
-            )
-            try:
-                y_actor.PickableOff()
-            except Exception:
-                try:
-                    y_actor.SetPickable(False)
-                except Exception:
-                    pass
-            
-            # 存储两个actor（使用列表）
-            self._origin_axes_actor = [x_actor, y_actor]
+
     def undo(self):
         """撤销功能已移除"""
         return True

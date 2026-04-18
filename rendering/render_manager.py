@@ -11,6 +11,7 @@ import pyvista as pv
 class RenderManager:
     def __init__(self, plotter=None):
         self.plotter = plotter
+        self._scalar_bar_owner_id: str | None = None
 
     def set_plotter(self, plotter):
         self.plotter = plotter
@@ -28,6 +29,8 @@ class RenderManager:
 
         scalar_name = scene_object.active_scalar
         render_mode = scene_object.render_mode
+        show_scalar_bar = bool(scene_object.style.show_scalar_bar and scalar_name)
+        self._prepare_scalar_bar(scene_object.object_id, show_scalar_bar)
         prepared = self._prepare_display_data(scene_object)
         actors = []
 
@@ -43,7 +46,7 @@ class RenderManager:
                         cmap=scene_object.style.colormap,
                         clim=scene_object.style.clim,
                         opacity=[value * scene_object.opacity for value in scene_object.style.opacity_curve],
-                        show_scalar_bar=bool(scene_object.style.show_scalar_bar and scalar_name),
+                        show_scalar_bar=show_scalar_bar,
                         name=scene_object.object_id,
                     )
                 )
@@ -104,6 +107,9 @@ class RenderManager:
     def remove_object(self, scene_object, plotter=None):
         active_plotter = plotter or self.plotter
         if active_plotter is not None:
+            if self._scalar_bar_owner_id == scene_object.object_id:
+                self._clear_scalar_bars(active_plotter)
+                self._scalar_bar_owner_id = None
             for actor in list(getattr(scene_object, "actors", [])):
                 if actor is None:
                     continue
@@ -158,6 +164,7 @@ class RenderManager:
         blocks = list(self._iter_blocks(data))
         actors = []
         preference = scene_object.dataset.get_scalar_association(scalar_name)
+        show_scalar_bar = bool(scene_object.style.show_scalar_bar and scalar_name)
 
         for index, block in enumerate(blocks):
             if getattr(block, "n_points", 0) == 0:
@@ -167,7 +174,7 @@ class RenderManager:
                 "opacity": scene_object.opacity,
                 "cmap": scene_object.style.colormap,
                 "clim": scene_object.style.clim,
-                "show_scalar_bar": bool(scene_object.style.show_scalar_bar and scalar_name and index == 0),
+                "show_scalar_bar": bool(show_scalar_bar and index == 0),
                 "smooth_shading": isinstance(block, pv.PolyData),
                 "show_edges": False,
                 "render_points_as_spheres": render_mode == "points",
@@ -189,3 +196,21 @@ class RenderManager:
                     yield block
             return
         yield data
+
+    def _prepare_scalar_bar(self, object_id: str, show_scalar_bar: bool):
+        if self.plotter is None:
+            return
+        if show_scalar_bar:
+            self._clear_scalar_bars(self.plotter)
+            self._scalar_bar_owner_id = object_id
+            return
+        if self._scalar_bar_owner_id == object_id:
+            self._clear_scalar_bars(self.plotter)
+            self._scalar_bar_owner_id = None
+
+    def _clear_scalar_bars(self, plotter):
+        for title in list(getattr(plotter, "scalar_bars", {}).keys()):
+            try:
+                plotter.remove_scalar_bar(title=title, render=False)
+            except Exception:
+                pass

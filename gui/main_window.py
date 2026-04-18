@@ -33,6 +33,8 @@ class MainWindow(QMainWindow):
         self.thread_pool = QThreadPool.globalInstance()
         self._workers: set[Worker] = set()
         self._selection_outline_actors = []
+        self._show_view_axes = True
+        self._show_selection_highlight = True
         self.selected_object_id: str | None = None
         self.initial_workspace_bounds = np.array([-100.0, 100.0, -100.0, 100.0, -50.0, 50.0], dtype=float)
 
@@ -68,18 +70,31 @@ class MainWindow(QMainWindow):
         file_menu.addAction(exit_action)
 
         view_menu = menubar.addMenu("视图")
-        view_actions = [
-            ("重置视图", self.reset_view),
-            ("切换方向组件", self.toggle_axes),
-            ("切换网格", self.toggle_grid),
-            ("切换原点坐标轴", self.toggle_origin_axes),
-            ("切换坐标刻度", self.toggle_axis_scales),
-            ("清除选中高亮", self.clear_selection_outline),
-        ]
-        for text, callback in view_actions:
-            action = QAction(text, self)
-            action.triggered.connect(callback)
-            view_menu.addAction(action)
+
+        reset_view_action = QAction("重置视图", self)
+        reset_view_action.triggered.connect(self.reset_view)
+        view_menu.addAction(reset_view_action)
+
+        self.toggle_axes_action = QAction("方向组件", self)
+        self.toggle_axes_action.setCheckable(True)
+        self.toggle_axes_action.toggled.connect(self._set_axes_visible)
+        view_menu.addAction(self.toggle_axes_action)
+
+        self.toggle_axis_scales_action = QAction("坐标刻度", self)
+        self.toggle_axis_scales_action.setCheckable(True)
+        self.toggle_axis_scales_action.toggled.connect(self._set_axis_scales_visible)
+        view_menu.addAction(self.toggle_axis_scales_action)
+
+        self.toggle_selection_highlight_action = QAction("选中高亮", self)
+        self.toggle_selection_highlight_action.setCheckable(True)
+        self.toggle_selection_highlight_action.toggled.connect(self._set_selection_highlight_visible)
+        view_menu.addAction(self.toggle_selection_highlight_action)
+        view_menu.addSeparator()
+        self.toggle_scalar_bar_action = QAction("显示色标", self)
+        self.toggle_scalar_bar_action.setCheckable(True)
+        self.toggle_scalar_bar_action.setEnabled(False)
+        self.toggle_scalar_bar_action.toggled.connect(self._toggle_selected_scalar_bar)
+        view_menu.addAction(self.toggle_scalar_bar_action)
 
         tools_menu = menubar.addMenu("工具")
         clear_derived_action = QAction("清除派生对象", self)
@@ -177,6 +192,7 @@ class MainWindow(QMainWindow):
         self.view_axes.setParent(self.plotter)
         self.view_axes.raise_()
         self.axis_scale_component = AxisScaleComponent(self.plotter)
+        self._sync_view_menu_actions()
 
         def update_view_axes():
             try:
@@ -413,24 +429,10 @@ class MainWindow(QMainWindow):
             2000,
         )
 
-    def toggle_origin_axes(self):
-        self.plotter.toggle_origin_axes()
-        self.statusBar().showMessage(
-            "原点坐标轴已显示" if self.plotter.get_show_origin_axes() else "原点坐标轴已隐藏",
-            2000,
-        )
-
     def toggle_axis_scales(self):
         visible = self.axis_scale_component.toggle_visible()
         self.statusBar().showMessage(
             "坐标刻度已显示" if visible else "坐标刻度已隐藏",
-            2000,
-        )
-
-    def toggle_grid(self):
-        self.plotter.toggle_grid()
-        self.statusBar().showMessage(
-            "网格已显示" if self.plotter.get_show_grid() else "网格已隐藏",
             2000,
         )
 
@@ -443,11 +445,65 @@ class MainWindow(QMainWindow):
         self._selection_outline_actors = []
         self.plotter.render()
 
+    def _set_axes_visible(self, visible: bool):
+        self._show_view_axes = bool(visible)
+        self.view_axes.setVisible(self._show_view_axes)
+        if hasattr(self, "toggle_axes_action"):
+            self.toggle_axes_action.blockSignals(True)
+            self.toggle_axes_action.setChecked(self._show_view_axes)
+            self.toggle_axes_action.blockSignals(False)
+        self.statusBar().showMessage("方向组件已显示" if self._show_view_axes else "方向组件已隐藏", 2000)
+
+    def _set_axis_scales_visible(self, visible: bool):
+        self.axis_scale_component.set_visible(bool(visible))
+        if hasattr(self, "toggle_axis_scales_action"):
+            self.toggle_axis_scales_action.blockSignals(True)
+            self.toggle_axis_scales_action.setChecked(bool(visible))
+            self.toggle_axis_scales_action.blockSignals(False)
+        self.statusBar().showMessage("坐标刻度已显示" if visible else "坐标刻度已隐藏", 2000)
+
+    def _set_selection_highlight_visible(self, visible: bool):
+        self._show_selection_highlight = bool(visible)
+        if hasattr(self, "toggle_selection_highlight_action"):
+            self.toggle_selection_highlight_action.blockSignals(True)
+            self.toggle_selection_highlight_action.setChecked(bool(visible))
+            self.toggle_selection_highlight_action.blockSignals(False)
+        if not visible:
+            self.clear_selection_outline()
+        else:
+            scene_object = self._get_selected_scene_object()
+            if scene_object is not None:
+                source_object = (
+                    self.scene_service.get_object(scene_object.source_object_id)
+                    if scene_object.source_object_id
+                    else scene_object
+                )
+                highlight_targets = [scene_object]
+                if source_object is not None and source_object.object_id != scene_object.object_id:
+                    highlight_targets.append(source_object)
+                self._highlight_objects(highlight_targets)
+        self.statusBar().showMessage("选中高亮已显示" if visible else "选中高亮已隐藏", 2000)
+
+    def _sync_view_menu_actions(self):
+        if hasattr(self, "toggle_axes_action"):
+            self.toggle_axes_action.blockSignals(True)
+            self.toggle_axes_action.setChecked(self._show_view_axes)
+            self.toggle_axes_action.blockSignals(False)
+        if hasattr(self, "toggle_axis_scales_action"):
+            self.toggle_axis_scales_action.blockSignals(True)
+            self.toggle_axis_scales_action.setChecked(self.axis_scale_component.get_visible())
+            self.toggle_axis_scales_action.blockSignals(False)
+        if hasattr(self, "toggle_selection_highlight_action"):
+            self.toggle_selection_highlight_action.blockSignals(True)
+            self.toggle_selection_highlight_action.setChecked(self._show_selection_highlight)
+            self.toggle_selection_highlight_action.blockSignals(False)
+
     def on_object_selected(self, object_id: str):
         previous_selected_id = self.selected_object_id
         self.selected_object_id = object_id
         scene_object = self.scene_service.get_object(object_id)
         if scene_object is None:
+            self._sync_scalar_bar_action(None)
             return
         if previous_selected_id and previous_selected_id != object_id and self.plotter.is_polyline_drawing():
             self.plotter.cancel_polyline_drawing()
@@ -463,10 +519,13 @@ class MainWindow(QMainWindow):
         if source_object is not None and source_object.object_id != scene_object.object_id:
             highlight_targets.append(source_object)
         self._highlight_objects(highlight_targets)
+        self._sync_scalar_bar_action(scene_object)
         self.statusBar().showMessage(f"已选中：{scene_object.name}", 2500)
 
     def _highlight_objects(self, scene_objects):
         self.clear_selection_outline()
+        if not self._show_selection_highlight:
+            return
         colors = ["yellow", "orange"]
         for index, scene_object in enumerate(scene_objects):
             self._highlight_single_object(scene_object, colors[min(index, len(colors) - 1)])
@@ -535,6 +594,22 @@ class MainWindow(QMainWindow):
             return None
         return self.scene_service.get_object(self.selected_object_id)
 
+    def _toggle_selected_scalar_bar(self, checked: bool):
+        scene_object = self._get_selected_scene_object()
+        if scene_object is None:
+            self._sync_scalar_bar_action(None)
+            return
+        self._apply_style_update(scene_object.object_id, show_scalar_bar=checked)
+
+    def _sync_scalar_bar_action(self, scene_object):
+        if not hasattr(self, "toggle_scalar_bar_action"):
+            return
+        enabled = scene_object is not None and scene_object.active_scalar is not None
+        self.toggle_scalar_bar_action.blockSignals(True)
+        self.toggle_scalar_bar_action.setEnabled(enabled)
+        self.toggle_scalar_bar_action.setChecked(bool(enabled and scene_object.style.show_scalar_bar))
+        self.toggle_scalar_bar_action.blockSignals(False)
+
     def _apply_style_update(self, object_id: str, **updates):
         scene_object = self.scene_service.update_style(object_id, **updates)
         if scene_object is None:
@@ -542,6 +617,7 @@ class MainWindow(QMainWindow):
         self.scene_manager.refresh_object(scene_object)
         if self.selected_object_id == object_id:
             self.property_panel.set_scene_object(scene_object)
+            self._sync_scalar_bar_action(scene_object)
 
     def _on_scalar_changed(self, object_id: str, scalar_name: str):
         scene_object = self.scene_service.get_object(object_id)
@@ -578,6 +654,7 @@ class MainWindow(QMainWindow):
             self.property_panel.set_scene_object(None)
             self.slice_panel.set_scene_object(None)
             self.clip_panel.set_scene_object(None)
+            self._sync_scalar_bar_action(None)
             self.clear_selection_outline()
             self.plotter.cancel_polyline_drawing()
 
@@ -591,6 +668,7 @@ class MainWindow(QMainWindow):
             self.property_panel.set_scene_object(None)
             self.slice_panel.set_scene_object(None)
             self.clip_panel.set_scene_object(None)
+            self._sync_scalar_bar_action(None)
             self.plotter.cancel_polyline_drawing()
         self.clear_selection_outline()
         self.statusBar().showMessage("派生对象已清除", 2500)
@@ -751,7 +829,7 @@ class MainWindow(QMainWindow):
             axes_size = self.view_axes.size().width()
             margin = 10
             self.view_axes.move(plotter_size.width() - axes_size - margin, margin)
-            self.view_axes.show()
+            self.view_axes.setVisible(self._show_view_axes)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
