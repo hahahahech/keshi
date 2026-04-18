@@ -71,6 +71,30 @@ class SceneServiceSliceTests(unittest.TestCase):
         self.assertGreater(derived.data.n_cells, 0)
         self.assertIn("density_true", list(derived.data.point_data.keys()))
 
+    def test_clip_box_inherits_source_render_mode(self):
+        dataset = self.import_service.load_dataset("sample_data/synthetic_inversion_grid.csv")
+        scene_object = self.scene_service.add_dataset(dataset, render=False)
+        self.scene_service.update_style(scene_object.object_id, render_mode="volume")
+        bounds = scene_object.bounds
+
+        derived = self.scene_service.create_clip_box(
+            scene_object.object_id,
+            (
+                bounds[0],
+                (bounds[0] + bounds[1]) / 2.0,
+                bounds[2],
+                bounds[3],
+                bounds[4],
+                bounds[5],
+            ),
+            render=False,
+            add_to_scene=False,
+        )
+
+        self.assertEqual(derived.object_type, "clip")
+        self.assertEqual(derived.render_mode, "volume")
+        self.assertTrue(derived.dataset.is_regular_grid)
+
 
 if __name__ == "__main__":
     unittest.main()

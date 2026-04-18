@@ -395,7 +395,10 @@ class SceneService:
         object_id: str | None = None,
     ):
         scene_object = self._require_object(source_object_id)
-        result = scene_object.data.clip_box(bounds=bounds, invert=False)
+        if isinstance(scene_object.dataset, RegularGridDataset):
+            result = self._clip_regular_grid_box(scene_object.data, bounds)
+        else:
+            result = scene_object.data.clip_box(bounds=bounds, invert=False)
         name = f"{scene_object.name} 裁剪结果"
         parameters = {"bounds": [float(value) for value in bounds]}
         return self._add_derived_object(
@@ -690,6 +693,34 @@ class SceneService:
             samples.append(point)
         return np.asarray(samples, dtype=float), sample_distances
 
+    def _clip_regular_grid_box(
+        self,
+        data: pv.ImageData,
+        bounds: tuple[float, float, float, float, float, float],
+    ) -> pv.ImageData:
+        bounds_array = np.asarray(bounds, dtype=float).reshape(-1)
+        if bounds_array.size != 6:
+            raise ValueError("裁剪范围必须包含 6 个数值。")
+
+        voi: list[int] = []
+        dimensions = np.asarray(data.dimensions, dtype=int)
+        origin = np.asarray(data.origin, dtype=float)
+        spacing = np.asarray(data.spacing, dtype=float)
+
+        for axis in range(3):
+            low = float(min(bounds_array[axis * 2], bounds_array[axis * 2 + 1]))
+            high = float(max(bounds_array[axis * 2], bounds_array[axis * 2 + 1]))
+            coords = origin[axis] + np.arange(int(dimensions[axis]), dtype=float) * spacing[axis]
+            start = int(np.searchsorted(coords, low, side="left"))
+            end = int(np.searchsorted(coords, high, side="right") - 1)
+            start = max(0, min(start, int(dimensions[axis]) - 1))
+            end = max(0, min(end, int(dimensions[axis]) - 1))
+            if start > end:
+                raise ValueError("该操作结果为空。")
+            voi.extend([start, end])
+
+        return data.extract_subset(tuple(voi), rebase_coordinates=False)
+
     def _result_has_geometry(self, result: pv.DataSet) -> bool:
         if isinstance(result, pv.MultiBlock):
             for block in result:
@@ -727,7 +758,10 @@ class SceneService:
             import_spec=source_object.dataset.import_spec,
         )
         style = self._copy_style(source_object.style)
-        style.render_mode = "surface"
+        if object_type == "clip":
+            style.render_mode = source_object.style.render_mode
+        else:
+            style.render_mode = "surface"
         style.scalar_name = source_object.active_scalar
         style.clim = source_object.style.clim or dataset.get_scalar_range(style.scalar_name)
         if add_to_scene:
