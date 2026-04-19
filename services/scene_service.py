@@ -355,6 +355,15 @@ class SceneService:
         if np.isclose(top_z, bottom_z):
             raise ValueError("顶部 Z 和底部 Z 不能相同。")
 
+        direction_xy = self._principal_direction_xy(points)
+        line_direction = np.array([direction_xy[0], direction_xy[1], 0.0], dtype=float)
+        profile_normal = np.cross(line_direction, np.array([0.0, 0.0, 1.0], dtype=float))
+        normal_norm = float(np.linalg.norm(profile_normal))
+        if normal_norm > 1e-12:
+            profile_normal = profile_normal / normal_norm
+        else:
+            profile_normal = np.array([1.0, 0.0, 0.0], dtype=float)
+
         vertical_levels = np.linspace(float(top_z), float(bottom_z), int(vertical_samples))
         x_coords = np.repeat(samples[:, 0][None, :], len(vertical_levels), axis=0)
         y_coords = np.repeat(samples[:, 1][None, :], len(vertical_levels), axis=0)
@@ -368,16 +377,18 @@ class SceneService:
         name = f"{scene_object.name} 折线剖面"
         parameters = {
             "kind": "polyline",
+            "line_mode": "polyline_fence",
             "points": [[float(value) for value in point] for point in points.tolist()],
             "top_z": float(top_z),
             "bottom_z": float(bottom_z),
             "line_step": float(line_step),
             "vertical_samples": int(vertical_samples),
+            "normal": [float(value) for value in profile_normal.tolist()],
         }
         return self._add_derived_object(
             scene_object,
             result,
-            object_type="section",
+            object_type="slice",
             name=name,
             render=render,
             add_to_scene=add_to_scene,
@@ -401,6 +412,188 @@ class SceneService:
             result = scene_object.data.clip_box(bounds=bounds, invert=False)
         name = f"{scene_object.name} 裁剪结果"
         parameters = {"bounds": [float(value) for value in bounds]}
+        return self._add_derived_object(
+            scene_object,
+            result,
+            object_type="clip",
+            name=name,
+            render=render,
+            add_to_scene=add_to_scene,
+            object_id=object_id,
+            parameters=parameters,
+        )
+
+    def create_grid_index_clip(
+        self,
+        source_object_id: str,
+        index_bounds: tuple[int, int, int, int, int, int],
+        *,
+        render: bool = True,
+        add_to_scene: bool = True,
+        object_id: str | None = None,
+    ):
+        scene_object = self._require_object(source_object_id)
+        if not isinstance(scene_object.dataset, RegularGridDataset):
+            raise ValueError("按格点索引裁剪仅支持规则体数据。")
+        result = self._clip_regular_grid_index_range(scene_object.data, index_bounds)
+        name = f"{scene_object.name} 格点裁剪结果"
+        parameters = {"index_bounds": [int(value) for value in index_bounds]}
+        return self._add_derived_object(
+            scene_object,
+            result,
+            object_type="clip",
+            name=name,
+            render=render,
+            add_to_scene=add_to_scene,
+            object_id=object_id,
+            parameters=parameters,
+        )
+
+    def create_polyline_plane_slice(
+        self,
+        source_object_id: str,
+        polyline_points,
+        *,
+        render: bool = True,
+        add_to_scene: bool = True,
+        object_id: str | None = None,
+    ):
+        scene_object = self._require_object(source_object_id)
+        points = self._normalize_polyline_points(polyline_points)
+        if points.shape[0] < 2:
+            raise ValueError("折线至少需要两个点。")
+
+        direction_xy = self._principal_direction_xy(points)
+        line_direction = np.array([direction_xy[0], direction_xy[1], 0.0], dtype=float)
+        up = np.array([0.0, 0.0, 1.0], dtype=float)
+        normal = np.cross(line_direction, up)
+        normal_norm = float(np.linalg.norm(normal))
+        if normal_norm <= 1e-12:
+            raise ValueError("折线方向无效，无法生成平面切片。")
+        normal = normal / normal_norm
+
+        origin = np.asarray(points, dtype=float).mean(axis=0)
+        result = scene_object.data.slice(
+            normal=tuple(float(v) for v in normal),
+            origin=tuple(float(v) for v in origin),
+        )
+        name = f"{scene_object.name} 折线平面切片"
+        parameters = {
+            "kind": "plane",
+            "origin": [float(v) for v in origin.tolist()],
+            "normal": [float(v) for v in normal.tolist()],
+            "line_mode": "polyline_plane",
+            "line_points": [[float(v) for v in point] for point in points.tolist()],
+        }
+        return self._add_derived_object(
+            scene_object,
+            result,
+            object_type="slice",
+            name=name,
+            render=render,
+            add_to_scene=add_to_scene,
+            object_id=object_id,
+            parameters=parameters,
+        )
+
+    def move_slice(
+        self,
+        slice_object_id: str,
+        offset: float,
+        *,
+        component_axis: str | None = None,
+        render: bool = True,
+        add_to_scene: bool = True,
+        object_id: str | None = None,
+    ):
+        slice_object = self._require_object(slice_object_id)
+        kind = str((slice_object.parameters or {}).get("kind") or "").lower()
+        if kind == "polyline":
+            return self._move_polyline_slice(
+                slice_object_id,
+                offset=float(offset),
+                render=render,
+                add_to_scene=add_to_scene,
+                object_id=object_id,
+            )
+        source_object, origin, normal = self._resolve_slice_plane(
+            slice_object_id,
+            component_axis=component_axis,
+        )
+        shifted_origin = origin + float(offset) * normal
+        return self.create_plane_slice(
+            source_object.object_id,
+            tuple(float(value) for value in shifted_origin),
+            tuple(float(value) for value in normal),
+            render=render,
+            add_to_scene=add_to_scene,
+            object_id=object_id,
+        )
+
+    def tilt_slice(
+        self,
+        slice_object_id: str,
+        angle_deg: float,
+        *,
+        tilt_axis: str | tuple[float, float, float] | list[float],
+        component_axis: str | None = None,
+        render: bool = True,
+        add_to_scene: bool = True,
+        object_id: str | None = None,
+    ):
+        slice_object = self._require_object(slice_object_id)
+        kind = str((slice_object.parameters or {}).get("kind") or "").lower()
+        if kind == "polyline":
+            return self._tilt_polyline_slice(
+                slice_object_id,
+                angle_deg=float(angle_deg),
+                tilt_axis=tilt_axis,
+                render=render,
+                add_to_scene=add_to_scene,
+                object_id=object_id,
+            )
+        source_object, origin, normal = self._resolve_slice_plane(
+            slice_object_id,
+            component_axis=component_axis,
+        )
+        axis_vector = self._parse_tilt_axis(tilt_axis)
+        if abs(float(np.dot(axis_vector, normal))) > 0.999:
+            raise ValueError("倾斜轴不能与切片法向平行。")
+        rotated_normal = self._rotate_vector(normal, axis_vector, np.deg2rad(float(angle_deg)))
+        norm = float(np.linalg.norm(rotated_normal))
+        if norm <= 1e-12:
+            raise ValueError("倾斜后的切片法向无效。")
+        rotated_normal = rotated_normal / norm
+        return self.create_plane_slice(
+            source_object.object_id,
+            tuple(float(value) for value in origin),
+            tuple(float(value) for value in rotated_normal),
+            render=render,
+            add_to_scene=add_to_scene,
+            object_id=object_id,
+        )
+
+    def create_mask_clip_from_polyline(
+        self,
+        source_object_id: str,
+        polyline_points,
+        *,
+        render: bool = True,
+        add_to_scene: bool = True,
+        object_id: str | None = None,
+    ):
+        scene_object = self._require_object(source_object_id)
+        if not isinstance(scene_object.dataset, RegularGridDataset):
+            raise ValueError("掩膜裁剪目前仅支持规则体数据。")
+        points = self._normalize_polyline_points(polyline_points)
+        if points.shape[0] < 3:
+            raise ValueError("掩膜边界至少需要三个点。")
+        result = self._mask_regular_grid_with_polygon_xy(scene_object.data, points)
+        name = f"{scene_object.name} 掩膜裁剪结果"
+        parameters = {
+            "mask_kind": "polyline_xy",
+            "points": [[float(value) for value in row] for row in points.tolist()],
+        }
         return self._add_derived_object(
             scene_object,
             result,
@@ -594,6 +787,17 @@ class SceneService:
                         render=False,
                         object_id=definition.get("object_id"),
                     )
+                elif kind == "polyline":
+                    scene_object = self.create_polyline_section(
+                        source_object_id,
+                        parameters["points"],
+                        top_z=parameters["top_z"],
+                        bottom_z=parameters["bottom_z"],
+                        line_step=parameters["line_step"],
+                        vertical_samples=parameters["vertical_samples"],
+                        render=False,
+                        object_id=definition.get("object_id"),
+                    )
                 else:
                     scene_object = self.create_plane_slice(
                         source_object_id,
@@ -603,12 +807,27 @@ class SceneService:
                         object_id=definition.get("object_id"),
                     )
             elif object_type == "clip":
-                scene_object = self.create_clip_box(
-                    source_object_id,
-                    tuple(parameters["bounds"]),
-                    render=False,
-                    object_id=definition.get("object_id"),
-                )
+                if parameters.get("mask_kind") == "polyline_xy" and "points" in parameters:
+                    scene_object = self.create_mask_clip_from_polyline(
+                        source_object_id,
+                        parameters["points"],
+                        render=False,
+                        object_id=definition.get("object_id"),
+                    )
+                elif "index_bounds" in parameters:
+                    scene_object = self.create_grid_index_clip(
+                        source_object_id,
+                        tuple(parameters["index_bounds"]),
+                        render=False,
+                        object_id=definition.get("object_id"),
+                    )
+                else:
+                    scene_object = self.create_clip_box(
+                        source_object_id,
+                        tuple(parameters["bounds"]),
+                        render=False,
+                        object_id=definition.get("object_id"),
+                    )
             elif object_type == "section":
                 scene_object = self.create_polyline_section(
                     source_object_id,
@@ -662,6 +881,198 @@ class SceneService:
             raise KeyError(f"未知场景对象：{object_id}")
         return scene_object
 
+    def _resolve_slice_plane(
+        self,
+        slice_object_id: str,
+        *,
+        component_axis: str | None = None,
+    ) -> tuple[DatasetSceneObject, np.ndarray, np.ndarray]:
+        slice_object = self._require_object(slice_object_id)
+        params = dict(slice_object.parameters or {})
+        kind = str(params.get("kind") or "plane").lower()
+        is_slice_like = str(getattr(slice_object, "object_type", "") or "").lower() == "slice" or kind in {
+            "axis",
+            "orthogonal",
+            "plane",
+        }
+        if not is_slice_like:
+            raise ValueError("仅切片对象支持移动或倾斜。")
+
+        source_object = self._resolve_slice_source_object(slice_object)
+        source_bounds = np.asarray(source_object.bounds, dtype=float)
+
+        if kind == "axis":
+            axis_name = str(params.get("axis") or "").lower()
+            if axis_name not in {"x", "y", "z"}:
+                raise ValueError("切片轴向参数无效。")
+            position = float(params.get("position"))
+            origin = self._axis_origin_from_bounds(source_bounds, axis_name, position)
+            normal = self._axis_vector(axis_name)
+            return source_object, origin, normal
+
+        if kind == "orthogonal":
+            axis_name = str(component_axis or "").lower()
+            if axis_name not in {"x", "y", "z"}:
+                raise ValueError("三向切片请先指定要操作的轴向（X/Y/Z）。")
+            if axis_name not in params:
+                raise ValueError("三向切片参数缺少目标轴向坐标。")
+            position = float(params[axis_name])
+            origin = self._axis_origin_from_bounds(source_bounds, axis_name, position)
+            normal = self._axis_vector(axis_name)
+            return source_object, origin, normal
+
+        if "origin" not in params or "normal" not in params:
+            raise ValueError("切片参数缺少平面原点或法向。")
+        origin = np.asarray(params["origin"], dtype=float).reshape(-1)
+        normal = np.asarray(params["normal"], dtype=float).reshape(-1)
+        if origin.size != 3 or normal.size != 3:
+            raise ValueError("切片平面参数格式无效。")
+        normal_norm = float(np.linalg.norm(normal))
+        if normal_norm <= 1e-12:
+            raise ValueError("切片法向量无效。")
+        return source_object, origin, normal / normal_norm
+
+    def _resolve_slice_source_object(self, slice_object):
+        source_id = slice_object.source_object_id or slice_object.object_id
+        source_object = self._require_object(source_id)
+        while source_object.object_type == "slice" and source_object.source_object_id:
+            source_object = self._require_object(source_object.source_object_id)
+        return source_object
+
+    def _axis_origin_from_bounds(
+        self,
+        bounds: np.ndarray,
+        axis_name: str,
+        position: float,
+    ) -> np.ndarray:
+        origin = np.array(
+            [
+                float((bounds[0] + bounds[1]) / 2.0),
+                float((bounds[2] + bounds[3]) / 2.0),
+                float((bounds[4] + bounds[5]) / 2.0),
+            ],
+            dtype=float,
+        )
+        axis_index = {"x": 0, "y": 1, "z": 2}[axis_name]
+        origin[axis_index] = float(position)
+        return origin
+
+    def _axis_vector(self, axis_name: str) -> np.ndarray:
+        mapping = {
+            "x": np.array([1.0, 0.0, 0.0], dtype=float),
+            "y": np.array([0.0, 1.0, 0.0], dtype=float),
+            "z": np.array([0.0, 0.0, 1.0], dtype=float),
+        }
+        vector = mapping.get(axis_name)
+        if vector is None:
+            raise ValueError("切片轴向必须是 X/Y/Z。")
+        return vector
+
+    def _parse_tilt_axis(self, tilt_axis: str | tuple[float, float, float] | list[float]) -> np.ndarray:
+        if isinstance(tilt_axis, str):
+            axis_name = tilt_axis.strip().lower()
+            if axis_name not in {"x", "y", "z"}:
+                raise ValueError("倾斜轴必须是 X/Y/Z。")
+            return self._axis_vector(axis_name)
+
+        vector = np.asarray(tilt_axis, dtype=float).reshape(-1)
+        if vector.size != 3:
+            raise ValueError("倾斜轴向量必须包含 3 个数值。")
+        norm = float(np.linalg.norm(vector))
+        if norm <= 1e-12:
+            raise ValueError("倾斜轴向量无效。")
+        return vector / norm
+
+    def _move_polyline_slice(
+        self,
+        slice_object_id: str,
+        *,
+        offset: float,
+        render: bool,
+        add_to_scene: bool,
+        object_id: str | None,
+    ):
+        slice_object = self._require_object(slice_object_id)
+        params = dict(slice_object.parameters or {})
+        points = self._normalize_polyline_points(params.get("points", []))
+        direction_xy = self._principal_direction_xy(points)
+        line_direction = np.array([direction_xy[0], direction_xy[1], 0.0], dtype=float)
+        normal = np.cross(line_direction, np.array([0.0, 0.0, 1.0], dtype=float))
+        norm = float(np.linalg.norm(normal))
+        if norm <= 1e-12:
+            raise ValueError("折线方向无效，无法平移。")
+        normal = normal / norm
+        shifted_points = points + float(offset) * normal
+
+        source_object = self._resolve_slice_source_object(slice_object)
+        return self.create_polyline_section(
+            source_object.object_id,
+            shifted_points,
+            top_z=float(params["top_z"]),
+            bottom_z=float(params["bottom_z"]),
+            line_step=float(params["line_step"]),
+            vertical_samples=int(params["vertical_samples"]),
+            render=render,
+            add_to_scene=add_to_scene,
+            object_id=object_id,
+        )
+
+    def _tilt_polyline_slice(
+        self,
+        slice_object_id: str,
+        *,
+        angle_deg: float,
+        tilt_axis: str | tuple[float, float, float] | list[float],
+        render: bool,
+        add_to_scene: bool,
+        object_id: str | None,
+    ):
+        axis_vector = self._parse_tilt_axis(tilt_axis)
+        # 折线剖面由 XY 轨迹定义，倾斜限定为绕 Z 轴旋转。
+        if abs(float(axis_vector[2])) < 0.999:
+            raise ValueError("折线剖面仅支持绕 Z 轴旋转。")
+
+        slice_object = self._require_object(slice_object_id)
+        params = dict(slice_object.parameters or {})
+        points = self._normalize_polyline_points(params.get("points", []))
+        center_xy = np.mean(points[:, :2], axis=0)
+        angle_rad = np.deg2rad(float(angle_deg))
+        cos_value = float(np.cos(angle_rad))
+        sin_value = float(np.sin(angle_rad))
+        rotation = np.array([[cos_value, -sin_value], [sin_value, cos_value]], dtype=float)
+        shifted_xy = points[:, :2] - center_xy[None, :]
+        rotated_xy = shifted_xy @ rotation.T + center_xy[None, :]
+        rotated_points = points.copy()
+        rotated_points[:, :2] = rotated_xy
+
+        source_object = self._resolve_slice_source_object(slice_object)
+        return self.create_polyline_section(
+            source_object.object_id,
+            rotated_points,
+            top_z=float(params["top_z"]),
+            bottom_z=float(params["bottom_z"]),
+            line_step=float(params["line_step"]),
+            vertical_samples=int(params["vertical_samples"]),
+            render=render,
+            add_to_scene=add_to_scene,
+            object_id=object_id,
+        )
+
+    def _rotate_vector(self, vector: np.ndarray, axis: np.ndarray, angle_rad: float) -> np.ndarray:
+        v = np.asarray(vector, dtype=float).reshape(3)
+        k = np.asarray(axis, dtype=float).reshape(3)
+        k_norm = float(np.linalg.norm(k))
+        if k_norm <= 1e-12:
+            raise ValueError("旋转轴无效。")
+        k = k / k_norm
+        cos_value = float(np.cos(angle_rad))
+        sin_value = float(np.sin(angle_rad))
+        return (
+            v * cos_value
+            + np.cross(k, v) * sin_value
+            + k * float(np.dot(k, v)) * (1.0 - cos_value)
+        )
+
     def _normalize_polyline_points(self, polyline_points) -> np.ndarray:
         points = np.asarray(polyline_points, dtype=float)
         if points.ndim != 2 or points.shape[0] < 2:
@@ -671,6 +1082,24 @@ class SceneService:
         if points.shape[1] != 3:
             raise ValueError("折线点必须是二维或三维坐标。")
         return points
+
+    def _principal_direction_xy(self, points: np.ndarray) -> np.ndarray:
+        xy = np.asarray(points[:, :2], dtype=float)
+        centered = xy - xy.mean(axis=0, keepdims=True)
+        norm_centered = float(np.linalg.norm(centered))
+        if norm_centered <= 1e-12:
+            raise ValueError("折线点重合，无法生成平面切片。")
+
+        _, singular_values, vh = np.linalg.svd(centered, full_matrices=False)
+        if singular_values.size > 0 and float(singular_values[0]) > 1e-12:
+            direction = np.asarray(vh[0], dtype=float)
+        else:
+            direction = np.asarray(xy[-1] - xy[0], dtype=float)
+
+        norm_direction = float(np.linalg.norm(direction))
+        if norm_direction <= 1e-12:
+            raise ValueError("折线方向无效，无法生成平面切片。")
+        return direction / norm_direction
 
     def _resample_polyline_points(self, points: np.ndarray, line_step: float) -> tuple[np.ndarray, np.ndarray]:
         xy_points = points[:, :2]
@@ -720,6 +1149,100 @@ class SceneService:
             voi.extend([start, end])
 
         return data.extract_subset(tuple(voi), rebase_coordinates=False)
+
+    def _clip_regular_grid_index_range(
+        self,
+        data: pv.ImageData,
+        index_bounds: tuple[int, int, int, int, int, int],
+    ) -> pv.ImageData:
+        values = np.asarray(index_bounds, dtype=int).reshape(-1)
+        if values.size != 6:
+            raise ValueError("格点索引范围必须包含 6 个整数。")
+        dimensions = np.asarray(data.dimensions, dtype=int)
+        voi: list[int] = []
+        for axis in range(3):
+            axis_min = int(min(values[axis * 2], values[axis * 2 + 1]))
+            axis_max = int(max(values[axis * 2], values[axis * 2 + 1]))
+            axis_min = max(0, min(axis_min, int(dimensions[axis]) - 1))
+            axis_max = max(0, min(axis_max, int(dimensions[axis]) - 1))
+            if axis_min > axis_max:
+                raise ValueError("该操作结果为空。")
+            voi.extend([axis_min, axis_max])
+        return data.extract_subset(tuple(voi), rebase_coordinates=False)
+
+    def _mask_regular_grid_with_polygon_xy(
+        self,
+        data: pv.ImageData,
+        polygon_points: np.ndarray,
+    ) -> pv.ImageData:
+        points = np.asarray(polygon_points, dtype=float)
+        polygon_xy = points[:, :2]
+        if polygon_xy.shape[0] < 3:
+            raise ValueError("掩膜边界至少需要三个点。")
+        if not np.allclose(polygon_xy[0], polygon_xy[-1]):
+            polygon_xy = np.vstack([polygon_xy, polygon_xy[0]])
+
+        dims = np.asarray(data.dimensions, dtype=int)
+        origin = np.asarray(data.origin, dtype=float)
+        spacing = np.asarray(data.spacing, dtype=float)
+        x_axis = origin[0] + spacing[0] * np.arange(dims[0], dtype=float)
+        y_axis = origin[1] + spacing[1] * np.arange(dims[1], dtype=float)
+        gx, gy = np.meshgrid(x_axis, y_axis, indexing="ij")
+        inside_xy = self._points_inside_polygon_xy(
+            gx.ravel(order="F"),
+            gy.ravel(order="F"),
+            polygon_xy,
+        ).reshape((dims[0], dims[1]), order="F")
+
+        if not np.any(inside_xy):
+            raise ValueError("掩膜区域为空，请检查边界是否位于数据范围内。")
+
+        mask_points = np.repeat(inside_xy[:, :, None], dims[2], axis=2).ravel(order="F")
+        result = data.copy(deep=True)
+        for name in list(result.point_data.keys()):
+            values = np.asarray(result.point_data[name])
+            flat = values.reshape(-1).astype(float, copy=True)
+            if flat.size != mask_points.size:
+                continue
+            flat[~mask_points] = np.nan
+            result.point_data[name] = flat
+
+        cell_dims = np.maximum(dims - 1, 0)
+        if np.all(cell_dims > 0):
+            mask_cells_xy = (
+                inside_xy[:-1, :-1]
+                & inside_xy[1:, :-1]
+                & inside_xy[:-1, 1:]
+                & inside_xy[1:, 1:]
+            )
+            mask_cells = np.repeat(mask_cells_xy[:, :, None], cell_dims[2], axis=2).ravel(order="F")
+            for name in list(result.cell_data.keys()):
+                values = np.asarray(result.cell_data[name])
+                flat = values.reshape(-1).astype(float, copy=True)
+                if flat.size != mask_cells.size:
+                    continue
+                flat[~mask_cells] = np.nan
+                result.cell_data[name] = flat
+        return result
+
+    def _points_inside_polygon_xy(
+        self,
+        x: np.ndarray,
+        y: np.ndarray,
+        polygon_xy: np.ndarray,
+    ) -> np.ndarray:
+        inside = np.zeros(x.shape[0], dtype=bool)
+        px = polygon_xy[:, 0]
+        py = polygon_xy[:, 1]
+        epsilon = 1e-12
+        for idx in range(len(px) - 1):
+            x0, y0 = float(px[idx]), float(py[idx])
+            x1, y1 = float(px[idx + 1]), float(py[idx + 1])
+            intersects = ((y0 > y) != (y1 > y)) & (
+                x < (x1 - x0) * (y - y0) / ((y1 - y0) + epsilon) + x0
+            )
+            inside ^= intersects
+        return inside
 
     def _result_has_geometry(self, result: pv.DataSet) -> bool:
         if isinstance(result, pv.MultiBlock):

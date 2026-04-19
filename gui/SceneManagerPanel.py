@@ -1,21 +1,21 @@
 """
-可视化工作区的场景与数据集树面板。
+可视化工作区中的对象树面板。
 """
 
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QDoubleSpinBox,
-    QHBoxLayout,
+    QInputDialog,
     QMenu,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
-from PyQt6.QtGui import QAction
 
 
 ROOT_LABELS = {
@@ -73,6 +73,9 @@ class SceneManagerPanel(QWidget):
     objectDeselected = pyqtSignal(str)
     renameRequested = pyqtSignal(str, str)
     deleteRequested = pyqtSignal(str)
+    openPropertyRequested = pyqtSignal(str)
+    sliceMoveRequested = pyqtSignal(str)
+    sliceTiltRequested = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -89,8 +92,11 @@ class SceneManagerPanel(QWidget):
         self.tree_widget = QTreeWidget(self)
         self.tree_widget.setHeaderLabels(["对象", "类型", "透明度"])
         self.tree_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        # 只允许通过双击“名称列”触发编辑，其他列完全不可编辑
+        self.tree_widget.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tree_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree_widget.itemChanged.connect(self._on_item_changed)
+        self.tree_widget.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.tree_widget.itemSelectionChanged.connect(self._on_selection_changed)
         self.tree_widget.customContextMenuRequested.connect(self._show_context_menu)
         layout.addWidget(self.tree_widget)
@@ -105,7 +111,11 @@ class SceneManagerPanel(QWidget):
         self.plotter = plotter
 
     def add_object(self, scene_object, category=None):
-        root_type = category or scene_object.object_type
+        root_alias = {
+            "section": "slice",
+        }
+        inferred_type = root_alias.get(scene_object.object_type, scene_object.object_type)
+        root_type = category or inferred_type
         root = self.root_nodes.get(root_type, self.root_nodes["helper"])
 
         previous_state = self._updating
@@ -113,7 +123,6 @@ class SceneManagerPanel(QWidget):
         item = SceneTreeWidgetItem(scene_object, root)
         item.setFlags(
             item.flags()
-            | Qt.ItemFlag.ItemIsEditable
             | Qt.ItemFlag.ItemIsSelectable
             | Qt.ItemFlag.ItemIsUserCheckable
             | Qt.ItemFlag.ItemIsEnabled
@@ -123,6 +132,13 @@ class SceneManagerPanel(QWidget):
         opacity_editor.valueChanged.connect(
             lambda value, object_id=scene_object.object_id: self.opacityChanged.emit(
                 object_id, value / 100.0
+            )
+        )
+        opacity_editor.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        opacity_editor.customContextMenuRequested.connect(
+            lambda pos, target_item=item, editor=opacity_editor: self._show_item_context_menu(
+                target_item,
+                editor.mapToGlobal(pos),
             )
         )
         item.opacity_editor = opacity_editor
@@ -181,11 +197,33 @@ class SceneManagerPanel(QWidget):
     def _on_item_changed(self, item: QTreeWidgetItem, column: int):
         if self._updating or not isinstance(item, SceneTreeWidgetItem):
             return
-        if column == 0:
-            visible = item.checkState(0) == Qt.CheckState.Checked
+        if column != 0:
+            return
+
+        visible = item.checkState(0) == Qt.CheckState.Checked
+        current_visible = bool(getattr(item.data_object, "visible", True))
+        edited_name = item.text(0).strip()
+        current_name = str(getattr(item.data_object, "name", "") or "")
+
+        # 先处理重命名，避免可见性刷新把新名称覆盖回旧值
+        if not edited_name:
+            self._updating = True
+            item.setText(0, current_name)
+            self._updating = False
+        elif edited_name != current_name:
+            item.data_object.name = edited_name
+            self.renameRequested.emit(item.object_id, edited_name)
+
+        if visible != current_visible:
+            item.data_object.visible = visible
             self.visibilityChanged.emit(item.object_id, visible)
-            if item.text(0) != item.data_object.name:
-                self.renameRequested.emit(item.object_id, item.text(0))
+
+    def _on_item_double_clicked(self, item: QTreeWidgetItem, column: int):
+        if self._updating or not isinstance(item, SceneTreeWidgetItem):
+            return
+        # 仅名称列允许编辑，类型列双击不进入编辑
+        if column == 0:
+            self.tree_widget.editItem(item, 0)
 
     def _on_selection_changed(self):
         selected = self.tree_widget.selectedItems()
@@ -199,10 +237,57 @@ class SceneManagerPanel(QWidget):
     def _show_context_menu(self, position):
         item = self.tree_widget.itemAt(position)
         if not isinstance(item, SceneTreeWidgetItem):
-            return
+            selected = self.tree_widget.selectedItems()
+            if not selected or not isinstance(selected[0], SceneTreeWidgetItem):
+                return
+            item = selected[0]
+        self._show_item_context_menu(item, self.tree_widget.viewport().mapToGlobal(position))
 
+    def _show_item_context_menu(self, item: SceneTreeWidgetItem, global_pos):
         menu = QMenu(self.tree_widget)
+        object_type = getattr(item.data_object, "object_type", "")
+        params = dict(getattr(item.data_object, "parameters", {}) or {})
+        kind = str(params.get("kind") or "").lower()
+        is_slice_like = object_type == "slice" or kind in {"axis", "orthogonal", "plane"}
+
+        if object_type == "dataset":
+            open_property_action = QAction("打开属性控制", self.tree_widget)
+            open_property_action.triggered.connect(
+                lambda: self.openPropertyRequested.emit(item.object_id)
+            )
+            menu.addAction(open_property_action)
+
+        rename_action = QAction("重命名", self.tree_widget)
+        rename_action.triggered.connect(lambda: self._rename_item(item))
+        menu.addAction(rename_action)
+
+        if is_slice_like:
+            move_slice_action = QAction("平移切片", self.tree_widget)
+            move_slice_action.triggered.connect(lambda: self.sliceMoveRequested.emit(item.object_id))
+            menu.addAction(move_slice_action)
+
+            tilt_slice_action = QAction("倾斜切片", self.tree_widget)
+            tilt_slice_action.triggered.connect(lambda: self.sliceTiltRequested.emit(item.object_id))
+            menu.addAction(tilt_slice_action)
+
         delete_action = QAction("删除", self.tree_widget)
         delete_action.triggered.connect(lambda: self.deleteRequested.emit(item.object_id))
         menu.addAction(delete_action)
-        menu.exec(self.tree_widget.viewport().mapToGlobal(position))
+        menu.exec(global_pos)
+
+    def _rename_item(self, item: SceneTreeWidgetItem):
+        current_name = str(getattr(item.data_object, "name", "") or "")
+        new_name, ok = QInputDialog.getText(self, "重命名对象", "请输入新名称：", text=current_name)
+        if not ok:
+            return
+        new_name = new_name.strip()
+        if not new_name:
+            return
+        if new_name == current_name:
+            return
+
+        self._updating = True
+        item.setText(0, new_name)
+        self._updating = False
+        item.data_object.name = new_name
+        self.renameRequested.emit(item.object_id, new_name)

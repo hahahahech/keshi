@@ -81,6 +81,11 @@ class InteractiveView(QtInteractor):
         self._polyline_line_actor = None
         self._polyline_points_actor = None
         self._polyline_preview_actor = None
+        self._polyline_grid_actor = None
+        self._polyline_snap_to_grid = False
+        self._polyline_grid_origin: Optional[np.ndarray] = None
+        self._polyline_grid_spacing: Optional[np.ndarray] = None
+        self._polyline_grid_dims: Optional[np.ndarray] = None
         
         # 初始化摄像机
         CameraController.setup_camera(self)
@@ -433,8 +438,17 @@ class InteractiveView(QtInteractor):
     def get_polyline_points(self) -> list[tuple[float, float, float]]:
         return [tuple(float(value) for value in point) for point in self._polyline_points]
 
-    def start_polyline_drawing(self, z_value: float, clip_bounds=None):
+    def start_polyline_drawing(
+        self,
+        z_value: float,
+        clip_bounds=None,
+        *,
+        snap_to_grid: bool = False,
+        grid_spec: Optional[dict] = None,
+        show_grid_overlay: bool = False,
+    ):
         self._clear_polyline_actors()
+        self._clear_polyline_grid_overlay()
         self._polyline_drawing = True
         self._polyline_draw_z = float(z_value)
         if clip_bounds is None:
@@ -443,6 +457,25 @@ class InteractiveView(QtInteractor):
         if clip_bounds_array.size != 6:
             raise ValueError("折线绘制边界必须包含 6 个数值。")
         self._polyline_clip_bounds = clip_bounds_array.copy()
+        self._polyline_snap_to_grid = bool(snap_to_grid)
+        self._polyline_grid_origin = None
+        self._polyline_grid_spacing = None
+        self._polyline_grid_dims = None
+        if self._polyline_snap_to_grid and grid_spec:
+            try:
+                origin = np.asarray(grid_spec.get("origin"), dtype=float).reshape(-1)
+                spacing = np.asarray(grid_spec.get("spacing"), dtype=float).reshape(-1)
+                dims = np.asarray(grid_spec.get("dims"), dtype=int).reshape(-1)
+                if origin.size == 3 and spacing.size == 3 and dims.size == 3:
+                    self._polyline_grid_origin = origin
+                    self._polyline_grid_spacing = spacing
+                    self._polyline_grid_dims = dims
+            except Exception:
+                self._polyline_grid_origin = None
+                self._polyline_grid_spacing = None
+                self._polyline_grid_dims = None
+        if show_grid_overlay and self._polyline_grid_origin is not None:
+            self._draw_polyline_grid_overlay()
         self._polyline_points = []
         self._polyline_hover_point = None
         self.polyline_changed.emit(0)
@@ -456,6 +489,11 @@ class InteractiveView(QtInteractor):
         self._polyline_drawing = False
         self._polyline_clip_bounds = None
         self._polyline_hover_point = None
+        self._polyline_snap_to_grid = False
+        self._polyline_grid_origin = None
+        self._polyline_grid_spacing = None
+        self._polyline_grid_dims = None
+        self._clear_polyline_grid_overlay()
         self._update_polyline_actors()
         self.polyline_finished.emit(self.get_polyline_points())
         if hasattr(self, "status_message"):
@@ -468,7 +506,12 @@ class InteractiveView(QtInteractor):
         self._polyline_clip_bounds = None
         self._polyline_points = []
         self._polyline_hover_point = None
+        self._polyline_snap_to_grid = False
+        self._polyline_grid_origin = None
+        self._polyline_grid_spacing = None
+        self._polyline_grid_dims = None
         self._clear_polyline_actors()
+        self._clear_polyline_grid_overlay()
         self.polyline_changed.emit(0)
         if was_active:
             self.polyline_cancelled.emit()
@@ -529,7 +572,10 @@ class InteractiveView(QtInteractor):
         )
         if point is None:
             return None
-        return self._clamp_polyline_point(point)
+        point = self._clamp_polyline_point(point)
+        if self._polyline_snap_to_grid:
+            point = self._snap_polyline_point_to_grid(point)
+        return point
 
     def _clamp_polyline_point(self, point):
         point_array = np.asarray(point, dtype=float).reshape(-1).copy()
@@ -593,6 +639,95 @@ class InteractiveView(QtInteractor):
         mesh = pv.PolyData(points)
         mesh.lines = np.concatenate([[len(points)], np.arange(len(points), dtype=np.int32)]).astype(np.int32)
         return mesh
+
+    def _snap_polyline_point_to_grid(self, point):
+        point_array = np.asarray(point, dtype=float).reshape(-1).copy()
+        if (
+            self._polyline_grid_origin is None
+            or self._polyline_grid_spacing is None
+            or self._polyline_grid_dims is None
+        ):
+            return point_array
+        origin = self._polyline_grid_origin
+        spacing = np.where(np.abs(self._polyline_grid_spacing) < 1e-12, 1.0, self._polyline_grid_spacing)
+        dims = self._polyline_grid_dims
+        idx_x = int(np.rint((point_array[0] - origin[0]) / spacing[0]))
+        idx_y = int(np.rint((point_array[1] - origin[1]) / spacing[1]))
+        idx_x = int(np.clip(idx_x, 0, max(int(dims[0]) - 1, 0)))
+        idx_y = int(np.clip(idx_y, 0, max(int(dims[1]) - 1, 0)))
+        point_array[0] = origin[0] + idx_x * spacing[0]
+        point_array[1] = origin[1] + idx_y * spacing[1]
+        return self._clamp_polyline_point(point_array)
+
+    def _draw_polyline_grid_overlay(self):
+        self._clear_polyline_grid_overlay()
+        if (
+            self._polyline_grid_origin is None
+            or self._polyline_grid_spacing is None
+            or self._polyline_grid_dims is None
+        ):
+            return
+        origin = self._polyline_grid_origin
+        spacing = self._polyline_grid_spacing
+        dims = self._polyline_grid_dims
+        nx = max(int(dims[0]), 1)
+        ny = max(int(dims[1]), 1)
+        x_values = origin[0] + np.arange(nx, dtype=float) * spacing[0]
+        y_values = origin[1] + np.arange(ny, dtype=float) * spacing[1]
+        bounds = self._polyline_clip_bounds if self._polyline_clip_bounds is not None else self.workspace_bounds
+        x_values = x_values[(x_values >= bounds[0] - 1e-9) & (x_values <= bounds[1] + 1e-9)]
+        y_values = y_values[(y_values >= bounds[2] - 1e-9) & (y_values <= bounds[3] + 1e-9)]
+        if x_values.size == 0 or y_values.size == 0:
+            return
+
+        max_lines = 120
+        x_step = max(int(np.ceil(x_values.size / max_lines)), 1)
+        y_step = max(int(np.ceil(y_values.size / max_lines)), 1)
+        x_values = x_values[::x_step]
+        y_values = y_values[::y_step]
+        z = float(self._polyline_draw_z)
+        points = []
+        lines = []
+
+        y_min = float(y_values.min())
+        y_max = float(y_values.max())
+        for x in x_values:
+            i0 = len(points)
+            points.append([float(x), y_min, z])
+            i1 = len(points)
+            points.append([float(x), y_max, z])
+            lines.extend([2, i0, i1])
+
+        x_min = float(x_values.min())
+        x_max = float(x_values.max())
+        for y in y_values:
+            i0 = len(points)
+            points.append([x_min, float(y), z])
+            i1 = len(points)
+            points.append([x_max, float(y), z])
+            lines.extend([2, i0, i1])
+
+        if not points:
+            return
+        mesh = pv.PolyData(np.asarray(points, dtype=float))
+        mesh.lines = np.asarray(lines, dtype=np.int32)
+        self._polyline_grid_actor = self.add_mesh(
+            mesh,
+            color="deepskyblue",
+            line_width=1,
+            opacity=0.35,
+            pickable=False,
+            name="polyline_grid_overlay",
+        )
+
+    def _clear_polyline_grid_overlay(self):
+        if self._polyline_grid_actor is None:
+            return
+        try:
+            self.remove_actor(self._polyline_grid_actor)
+        except Exception:
+            pass
+        self._polyline_grid_actor = None
     
     # ========== 摄像机控制公共 API ==========
     

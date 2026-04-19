@@ -1,5 +1,5 @@
 """
-切片与剖面控制面板。
+切片控制面板。
 """
 
 from __future__ import annotations
@@ -154,7 +154,7 @@ class SlicePanel(QWidget):
         status_layout.addWidget(self.cancel_polyline_button, 2, 1)
         layout.addWidget(status_box)
 
-        param_box = QGroupBox("剖面参数")
+        param_box = QGroupBox("平面参数")
         param_layout = QGridLayout(param_box)
         self.section_top_spin = self._make_float_spinbox()
         self.section_bottom_spin = self._make_float_spinbox()
@@ -253,7 +253,7 @@ class SlicePanel(QWidget):
         if drawing:
             self.section_state_label.setText("绘制中：左键加点，右键撤销，双击完成")
         else:
-            self.section_state_label.setText("未开始绘制" if point_count == 0 else "折线已完成，可直接生成剖面")
+            self.section_state_label.setText("未开始绘制" if point_count == 0 else "折线已完成，可直接生成平面切片")
         self.section_count_label.setText(f"当前点数：{point_count}")
         self._update_section_buttons(drawing=drawing)
 

@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import numpy as np
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication, QDockWidget
+from PyQt6.QtWidgets import QApplication, QDockWidget, QMenu
 
 from gui.main_window import MainWindow
 
@@ -35,6 +35,11 @@ class MainWindowDockTests(unittest.TestCase):
                 Qt.DockWidgetArea.NoDockWidgetArea,
             )
             self.assertIn("section", window.slice_panel.mode_checkboxes)
+            self.assertFalse(hasattr(window.clip_panel, "create_clip_button"))
+            self.assertFalse(hasattr(window.clip_panel, "start_grid_pick_button"))
+            self.assertFalse(hasattr(window.clip_panel, "cancel_grid_pick_button"))
+            self.assertTrue(hasattr(window.clip_panel, "start_mask_button"))
+            self.assertTrue(hasattr(window.clip_panel, "apply_mask_button"))
         finally:
             window.close()
 
@@ -82,6 +87,21 @@ class MainWindowDockTests(unittest.TestCase):
         finally:
             window.close()
 
+    def test_scalar_bar_owner_follows_current_selection(self):
+        window = MainWindow()
+        try:
+            dataset = window.import_service.load_dataset("sample_data/synthetic_inversion_grid.csv")
+            first = window.scene_service.add_dataset(dataset, render=True, name="first")
+            second = window.scene_service.add_dataset(dataset, render=True, name="second")
+
+            window.on_object_selected(first.object_id)
+            self.assertEqual(window.scene_service.render_manager._scalar_bar_owner_id, first.object_id)
+
+            window.on_object_selected(second.object_id)
+            self.assertEqual(window.scene_service.render_manager._scalar_bar_owner_id, second.object_id)
+        finally:
+            window.close()
+
     def test_view_menu_visibility_actions_track_component_state(self):
         window = MainWindow()
         try:
@@ -124,6 +144,141 @@ class MainWindowDockTests(unittest.TestCase):
 
             self.assertEqual(window._selection_outline_actors, [])
             self.assertFalse(window.toggle_selection_highlight_action.isChecked())
+        finally:
+            window.close()
+
+    def test_request_slice_move_dispatches_worker_for_slice_object(self):
+        window = MainWindow()
+        try:
+            dataset = window.import_service.load_dataset("sample_data/synthetic_inversion_grid.csv")
+            source = window.scene_service.add_dataset(dataset, render=False)
+            bounds = source.bounds
+            slice_object = window.scene_service.create_axis_slice(
+                source.object_id,
+                "z",
+                (bounds[4] + bounds[5]) / 2.0,
+                render=False,
+                add_to_scene=True,
+            )
+
+            with patch("gui.main_window.QInputDialog.getDouble", return_value=(120.0, True)), patch.object(
+                window, "_run_worker"
+            ) as mock_run_worker:
+                window._request_slice_move(slice_object.object_id)
+
+            self.assertEqual(mock_run_worker.call_count, 1)
+        finally:
+            window.close()
+
+    def test_request_slice_tilt_dispatches_worker_for_slice_object(self):
+        window = MainWindow()
+        try:
+            dataset = window.import_service.load_dataset("sample_data/synthetic_inversion_grid.csv")
+            source = window.scene_service.add_dataset(dataset, render=False)
+            bounds = source.bounds
+            slice_object = window.scene_service.create_axis_slice(
+                source.object_id,
+                "z",
+                (bounds[4] + bounds[5]) / 2.0,
+                render=False,
+                add_to_scene=True,
+            )
+
+            with patch("gui.main_window.QInputDialog.getItem", return_value=("X", True)), patch(
+                "gui.main_window.QInputDialog.getDouble",
+                return_value=(15.0, True),
+            ), patch.object(window, "_run_worker") as mock_run_worker:
+                window._request_slice_tilt(slice_object.object_id)
+
+            self.assertEqual(mock_run_worker.call_count, 1)
+        finally:
+            window.close()
+
+    def test_slice_item_context_menu_contains_move_and_tilt_actions(self):
+        window = MainWindow()
+        try:
+            dataset = window.import_service.load_dataset("sample_data/synthetic_inversion_grid.csv")
+            source = window.scene_service.add_dataset(dataset, render=False)
+            bounds = source.bounds
+            slice_object = window.scene_service.create_axis_slice(
+                source.object_id,
+                "z",
+                (bounds[4] + bounds[5]) / 2.0,
+                render=False,
+                add_to_scene=True,
+            )
+            item = window.scene_manager.add_object(slice_object)
+
+            collected_actions = []
+
+            def fake_exec(menu_self, *args, **kwargs):
+                collected_actions.extend(action.text() for action in menu_self.actions())
+                return None
+
+            with patch.object(QMenu, "exec", fake_exec):
+                window.scene_manager._show_item_context_menu(item, window.mapToGlobal(window.pos()))
+
+            self.assertIn("平移切片", collected_actions)
+            self.assertIn("倾斜切片", collected_actions)
+        finally:
+            window.close()
+
+    def test_polyline_section_object_is_grouped_under_slice_root(self):
+        window = MainWindow()
+        try:
+            dataset = window.import_service.load_dataset("sample_data/synthetic_inversion_grid.csv")
+            source = window.scene_service.add_dataset(dataset, render=False)
+            bounds = source.bounds
+            section = window.scene_service.create_polyline_section(
+                source.object_id,
+                [
+                    (bounds[0], bounds[2], bounds[5]),
+                    ((bounds[0] + bounds[1]) / 2.0, (bounds[2] + bounds[3]) / 2.0, bounds[5]),
+                    (bounds[1], bounds[3], bounds[5]),
+                ],
+                top_z=bounds[5],
+                bottom_z=bounds[4],
+                line_step=max((bounds[1] - bounds[0]) / 20.0, 1.0),
+                vertical_samples=12,
+                render=False,
+                add_to_scene=False,
+            )
+
+            item = window.scene_manager.add_object(section)
+            self.assertIs(item.parent(), window.scene_manager.root_nodes["slice"])
+        finally:
+            window.close()
+
+    def test_create_polyline_section_dispatches_polyline_fence_slice(self):
+        window = MainWindow()
+        try:
+            dataset = window.import_service.load_dataset("sample_data/synthetic_inversion_grid.csv")
+            source = window.scene_service.add_dataset(dataset, render=False)
+            points = [(0.0, 0.0, 0.0), (100.0, 50.0, 0.0)]
+
+            with patch.object(window.plotter, "get_polyline_points", return_value=points), patch.object(
+                window.scene_service,
+                "create_polyline_section",
+                return_value=None,
+            ) as mock_polyline_section, patch.object(window, "_run_worker") as mock_run_worker:
+                window._create_polyline_section(
+                    source.object_id,
+                    {"top_z": 0.0, "bottom_z": -200.0, "line_step": 20.0, "vertical_samples": 16},
+                )
+                self.assertEqual(mock_run_worker.call_count, 1)
+                _, worker_func, _ = mock_run_worker.call_args[0]
+                worker_func()
+                mock_polyline_section.assert_called_once_with(
+                    source.object_id,
+                    points,
+                    top_z=0.0,
+                    bottom_z=-200.0,
+                    line_step=20.0,
+                    vertical_samples=16,
+                    render=False,
+                    add_to_scene=False,
+                )
+
         finally:
             window.close()
 

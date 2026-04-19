@@ -1,12 +1,11 @@
 """
-裁剪控制面板。
+裁剪控制面板（仅保留不规则裁剪）。
 """
 
 from __future__ import annotations
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QDoubleSpinBox,
     QFormLayout,
     QGridLayout,
     QGroupBox,
@@ -19,7 +18,9 @@ from PyQt6.QtWidgets import (
 
 
 class ClipPanel(QWidget):
-    clipRequested = pyqtSignal(str, object)
+    maskDrawingStartRequested = pyqtSignal(str, object)
+    maskDrawingCancelRequested = pyqtSignal()
+    maskClipRequested = pyqtSignal(str)
     clearDerivedRequested = pyqtSignal(str)
 
     def __init__(self, parent=None):
@@ -36,51 +37,40 @@ class ClipPanel(QWidget):
         header.addRow("目标对象", self.target_label)
         layout.addLayout(header)
 
-        self.clip_box = QGroupBox("框裁剪")
-        clip_layout = QGridLayout(self.clip_box)
-        self.clip_spins = {
-            key: self._make_spinbox() for key in ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
-        }
-        labels = [
-            ("xmin", "X 最小"),
-            ("xmax", "X 最大"),
-            ("ymin", "Y 最小"),
-            ("ymax", "Y 最大"),
-            ("zmin", "Z 最小"),
-            ("zmax", "Z 最大"),
-        ]
-        for row, (key, label) in enumerate(labels):
-            clip_layout.addWidget(QLabel(label), row, 0)
-            clip_layout.addWidget(self.clip_spins[key], row, 1)
-        self.create_clip_button = QPushButton("应用裁剪")
-        self.create_clip_button.clicked.connect(self._emit_clip)
-        clip_layout.addWidget(self.create_clip_button, 6, 0, 1, 2)
-        layout.addWidget(self.clip_box)
+        self.mask_box = QGroupBox("不规则裁剪（按绘制边界保留内部）")
+        mask_layout = QGridLayout(self.mask_box)
+        self.mask_state_label = QLabel("未开始绘制")
+        self.mask_count_label = QLabel("当前点数：0")
+        self.start_mask_button = QPushButton("开始绘制边界")
+        self.cancel_mask_button = QPushButton("取消绘制")
+        self.apply_mask_button = QPushButton("应用不规则裁剪")
+        self.start_mask_button.clicked.connect(self._emit_start_mask_drawing)
+        self.cancel_mask_button.clicked.connect(self._emit_cancel_mask_drawing)
+        self.apply_mask_button.clicked.connect(self._emit_mask_clip)
+        mask_layout.addWidget(self.mask_state_label, 0, 0, 1, 2)
+        mask_layout.addWidget(self.mask_count_label, 1, 0, 1, 2)
+        mask_layout.addWidget(self.start_mask_button, 2, 0)
+        mask_layout.addWidget(self.cancel_mask_button, 2, 1)
+        mask_layout.addWidget(self.apply_mask_button, 3, 0, 1, 2)
+        layout.addWidget(self.mask_box)
 
         actions_layout = QHBoxLayout()
-        self.reset_controls_button = QPushButton("重置参数")
         self.clear_derived_button = QPushButton("清除派生裁剪")
-        self.reset_controls_button.clicked.connect(self._reset_from_bounds)
         self.clear_derived_button.clicked.connect(self._emit_clear)
-        actions_layout.addWidget(self.reset_controls_button)
         actions_layout.addWidget(self.clear_derived_button)
         layout.addLayout(actions_layout)
 
         layout.addStretch(1)
         self._set_enabled(False)
 
-    def _make_spinbox(self, default: float = 0.0):
-        spin = QDoubleSpinBox(self)
-        spin.setRange(-1e12, 1e12)
-        spin.setDecimals(6)
-        spin.setValue(default)
-        return spin
-
     def _set_enabled(self, enabled: bool):
-        for spin in self.clip_spins.values():
-            spin.setEnabled(enabled)
-        for button in (self.create_clip_button, self.reset_controls_button, self.clear_derived_button):
-            button.setEnabled(enabled)
+        self.mask_box.setEnabled(enabled)
+        self.start_mask_button.setEnabled(enabled)
+        self.cancel_mask_button.setEnabled(False)
+        self.apply_mask_button.setEnabled(False)
+        self.clear_derived_button.setEnabled(enabled)
+        self.mask_state_label.setText("未开始绘制")
+        self.mask_count_label.setText("当前点数：0")
 
     def set_scene_object(self, scene_object):
         self._scene_object = scene_object
@@ -90,33 +80,30 @@ class ClipPanel(QWidget):
             return
         self.target_label.setText(scene_object.name)
         self._set_enabled(True)
-        self._reset_from_bounds()
 
-    def _reset_from_bounds(self):
+    def set_mask_state(self, drawing: bool, point_count: int):
+        if drawing:
+            self.mask_state_label.setText("绘制中：左键加点，右键撤销，双击完成")
+        else:
+            self.mask_state_label.setText("未开始绘制" if point_count == 0 else "边界已完成，可应用裁剪")
+        self.mask_count_label.setText(f"当前点数：{int(point_count)}")
+        self.start_mask_button.setEnabled(self._scene_object is not None and not drawing)
+        self.cancel_mask_button.setEnabled(self._scene_object is not None and (drawing or point_count > 0))
+        self.apply_mask_button.setEnabled(self._scene_object is not None and point_count >= 3)
+
+    def _emit_start_mask_drawing(self):
         if self._scene_object is None:
             return
-        bounds = self._scene_object.bounds
-        self.clip_spins["xmin"].setValue(float(bounds[0]))
-        self.clip_spins["xmax"].setValue(float(bounds[1]))
-        self.clip_spins["ymin"].setValue(float(bounds[2]))
-        self.clip_spins["ymax"].setValue(float(bounds[3]))
-        self.clip_spins["zmin"].setValue(float(bounds[4]))
-        self.clip_spins["zmax"].setValue(float(bounds[5]))
+        draw_z = float(self._scene_object.bounds[5]) if self._scene_object.bounds is not None else 0.0
+        self.maskDrawingStartRequested.emit(self._scene_object.object_id, {"draw_z": draw_z})
 
-    def _emit_clip(self):
+    def _emit_cancel_mask_drawing(self):
+        self.maskDrawingCancelRequested.emit()
+
+    def _emit_mask_clip(self):
         if self._scene_object is None:
             return
-        self.clipRequested.emit(
-            self._scene_object.object_id,
-            (
-                self.clip_spins["xmin"].value(),
-                self.clip_spins["xmax"].value(),
-                self.clip_spins["ymin"].value(),
-                self.clip_spins["ymax"].value(),
-                self.clip_spins["zmin"].value(),
-                self.clip_spins["zmax"].value(),
-            ),
-        )
+        self.maskClipRequested.emit(self._scene_object.object_id)
 
     def _emit_clear(self):
         if self._scene_object is None:
@@ -124,6 +111,5 @@ class ClipPanel(QWidget):
         self.clearDerivedRequested.emit(self._scene_object.object_id)
 
     def focus_clip_controls(self):
-        """将焦点移动到裁剪控制区域。"""
-        self.clip_box.setFocus()
-        self.create_clip_button.setFocus()
+        self.mask_box.setFocus()
+        self.start_mask_button.setFocus()

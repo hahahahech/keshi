@@ -10,7 +10,7 @@ import numpy as np
 import pyvista as pv
 from PyQt6.QtCore import Qt, QThreadPool, QTimer
 from PyQt6.QtGui import QAction
-from PyQt6.QtWidgets import QFileDialog, QDockWidget, QMainWindow, QMessageBox
+from PyQt6.QtWidgets import QFileDialog, QDockWidget, QInputDialog, QMainWindow, QMessageBox
 
 from gui.SceneManagerPanel import SceneManagerPanel
 from gui.axis_scale_component import AxisScaleComponent
@@ -36,6 +36,8 @@ class MainWindow(QMainWindow):
         self._show_view_axes = True
         self._show_selection_highlight = True
         self.selected_object_id: str | None = None
+        self._grid_pick_active = False
+        self._polyline_owner: str | None = None
         self.initial_workspace_bounds = np.array([-100.0, 100.0, -100.0, 100.0, -50.0, 50.0], dtype=float)
 
         self.import_service = ImportService()
@@ -89,6 +91,11 @@ class MainWindow(QMainWindow):
         self.toggle_selection_highlight_action.setCheckable(True)
         self.toggle_selection_highlight_action.toggled.connect(self._set_selection_highlight_visible)
         view_menu.addAction(self.toggle_selection_highlight_action)
+
+        self.toggle_scene_tree_action = QAction("场景树", self)
+        self.toggle_scene_tree_action.setCheckable(True)
+        self.toggle_scene_tree_action.toggled.connect(self._set_scene_tree_visible)
+        view_menu.addAction(self.toggle_scene_tree_action)
         view_menu.addSeparator()
         self.toggle_scalar_bar_action = QAction("显示色标", self)
         self.toggle_scalar_bar_action.setCheckable(True)
@@ -144,7 +151,11 @@ class MainWindow(QMainWindow):
         self.scene_manager.objectSelected.connect(self.on_object_selected)
         self.scene_manager.renameRequested.connect(self._on_rename_requested)
         self.scene_manager.deleteRequested.connect(self._on_delete_requested)
+        self.scene_manager.openPropertyRequested.connect(self._open_property_from_scene_manager)
+        self.scene_manager.sliceMoveRequested.connect(self._request_slice_move)
+        self.scene_manager.sliceTiltRequested.connect(self._request_slice_tilt)
         self.scene_dock = self._add_dock("场景管理", self.scene_manager, Qt.DockWidgetArea.LeftDockWidgetArea)
+        self.scene_dock.visibilityChanged.connect(self._on_scene_tree_dock_visibility_changed)
 
         self.property_panel = PropertyPanel(self)
         self.property_panel.scalarChanged.connect(self._on_scalar_changed)
@@ -180,13 +191,17 @@ class MainWindow(QMainWindow):
         self.slice_window = self.slice_dock
 
         self.clip_panel = ClipPanel()
-        self.clip_panel.clipRequested.connect(self._create_clip)
+        self.clip_panel.maskDrawingStartRequested.connect(self._start_mask_drawing)
+        self.clip_panel.maskDrawingCancelRequested.connect(self._cancel_polyline_drawing)
+        self.clip_panel.maskClipRequested.connect(self._create_mask_clip)
         self.clip_panel.clearDerivedRequested.connect(self.clear_derived_objects)
         self.clip_dock = self._add_dock("裁剪窗口", self.clip_panel, Qt.DockWidgetArea.RightDockWidgetArea)
         self.clip_window = self.clip_dock
 
         self.splitDockWidget(self.property_dock, self.slice_dock, Qt.Orientation.Vertical)
         self.splitDockWidget(self.slice_dock, self.clip_dock, Qt.Orientation.Vertical)
+        self.slice_dock.hide()
+        self.clip_dock.hide()
 
         self.view_axes = ViewAxes2D(self.plotter, size=96)
         self.view_axes.setParent(self.plotter)
@@ -280,6 +295,182 @@ class MainWindow(QMainWindow):
         if hasattr(self, "clip_panel"):
             self.clip_panel.focus_clip_controls()
         self.statusBar().showMessage("已打开裁剪窗口", 2500)
+
+    def show_property_window(self):
+        self._show_dock(getattr(self, "property_dock", None))
+        self.statusBar().showMessage("已打开属性控制窗口", 2500)
+
+    def _open_property_from_scene_manager(self, object_id: str):
+        self.on_object_selected(object_id)
+        self.show_property_window()
+
+    def _request_slice_move(self, slice_object_id: str):
+        slice_object = self.scene_service.get_object(slice_object_id)
+        if slice_object is None or not self._is_slice_like_object(slice_object):
+            return
+        component_axis = self._pick_slice_component_axis(slice_object)
+        if component_axis == "__cancel__":
+            return
+
+        offset, ok = QInputDialog.getDouble(
+            self,
+            "平移切片",
+            "沿切片法向平移距离（正负均可）：",
+            0.0,
+            -1e9,
+            1e9,
+            3,
+        )
+        if not ok:
+            return
+
+        self._run_worker(
+            "正在平移切片...",
+            lambda: self.scene_service.move_slice(
+                slice_object_id,
+                offset,
+                component_axis=component_axis,
+                render=False,
+                add_to_scene=False,
+            ),
+            self._on_created_objects_ready,
+        )
+
+    def _request_slice_tilt(self, slice_object_id: str):
+        slice_object = self.scene_service.get_object(slice_object_id)
+        if slice_object is None or not self._is_slice_like_object(slice_object):
+            return
+
+        component_axis = self._pick_slice_component_axis(slice_object)
+        if component_axis == "__cancel__":
+            return
+
+        tilt_axes = self._available_tilt_axes(slice_object, component_axis=component_axis)
+        if not tilt_axes:
+            QMessageBox.information(self, "倾斜切片", "当前切片没有可用的倾斜轴。")
+            return
+        axis_labels = [axis.upper() for axis in tilt_axes]
+        selected_axis, axis_ok = QInputDialog.getItem(
+            self,
+            "倾斜切片",
+            "选择倾斜旋转轴：",
+            axis_labels,
+            0,
+            False,
+        )
+        if not axis_ok:
+            return
+
+        angle_deg, angle_ok = QInputDialog.getDouble(
+            self,
+            "倾斜切片",
+            "输入倾斜角度（度）：",
+            15.0,
+            -89.0,
+            89.0,
+            2,
+        )
+        if not angle_ok:
+            return
+
+        self._run_worker(
+            "正在倾斜切片...",
+            lambda: self.scene_service.tilt_slice(
+                slice_object_id,
+                angle_deg=angle_deg,
+                tilt_axis=selected_axis.lower(),
+                component_axis=component_axis,
+                render=False,
+                add_to_scene=False,
+            ),
+            self._on_created_objects_ready,
+        )
+
+    def _pick_slice_component_axis(self, slice_object):
+        params = dict(getattr(slice_object, "parameters", {}) or {})
+        kind = str(params.get("kind") or "").lower()
+        if kind != "orthogonal":
+            return None
+        axis_label, ok = QInputDialog.getItem(
+            self,
+            "选择切片分量",
+            "三向切片包含 X/Y/Z 三个分量，请先选择要操作的分量：",
+            ["X", "Y", "Z"],
+            2,
+            False,
+        )
+        if not ok:
+            return "__cancel__"
+        return axis_label.lower()
+
+    def _available_tilt_axes(self, slice_object, component_axis: str | None = None) -> list[str]:
+        kind = str((getattr(slice_object, "parameters", {}) or {}).get("kind") or "").lower()
+        if kind == "polyline":
+            return ["z"]
+        fixed_axis = None
+        if kind == "axis":
+            fixed_axis = str(slice_object.parameters.get("axis") or "").lower()
+        elif kind == "orthogonal":
+            fixed_axis = (component_axis or "").lower()
+
+        if fixed_axis in {"x", "y", "z"}:
+            return [axis for axis in ("x", "y", "z") if axis != fixed_axis]
+
+        normal = self._slice_normal_hint(slice_object, component_axis=component_axis)
+        if normal is None:
+            return ["x", "y", "z"]
+
+        axes = {
+            "x": np.array([1.0, 0.0, 0.0], dtype=float),
+            "y": np.array([0.0, 1.0, 0.0], dtype=float),
+            "z": np.array([0.0, 0.0, 1.0], dtype=float),
+        }
+        allowed = []
+        for axis_name, axis_vector in axes.items():
+            if abs(float(np.dot(normal, axis_vector))) < 0.99:
+                allowed.append(axis_name)
+        return allowed or ["x", "y", "z"]
+
+    def _slice_normal_hint(self, slice_object, component_axis: str | None = None):
+        params = dict(getattr(slice_object, "parameters", {}) or {})
+        kind = str(params.get("kind") or "").lower()
+        axis_map = {
+            "x": np.array([1.0, 0.0, 0.0], dtype=float),
+            "y": np.array([0.0, 1.0, 0.0], dtype=float),
+            "z": np.array([0.0, 0.0, 1.0], dtype=float),
+        }
+        if kind == "axis":
+            return axis_map.get(str(params.get("axis") or "").lower())
+        if kind == "orthogonal":
+            return axis_map.get((component_axis or "").lower())
+        if kind == "polyline":
+            normal = np.asarray(params.get("normal", []), dtype=float).reshape(-1)
+            if normal.size != 3:
+                return None
+            norm = float(np.linalg.norm(normal))
+            if norm <= 1e-12:
+                return None
+            return normal / norm
+        if kind != "plane":
+            return None
+
+        normal = np.asarray(params.get("normal", []), dtype=float).reshape(-1)
+        if normal.size != 3:
+            return None
+        norm = float(np.linalg.norm(normal))
+        if norm <= 1e-12:
+            return None
+        return normal / norm
+
+    def _is_slice_like_object(self, scene_object) -> bool:
+        if scene_object is None:
+            return False
+        object_type = str(getattr(scene_object, "object_type", "") or "").lower()
+        if object_type == "slice":
+            return True
+        params = dict(getattr(scene_object, "parameters", {}) or {})
+        kind = str(params.get("kind") or "").lower()
+        return kind in {"axis", "orthogonal", "plane"}
 
     def import_data(self):
         file_paths, _ = QFileDialog.getOpenFileNames(
@@ -484,6 +675,22 @@ class MainWindow(QMainWindow):
                 self._highlight_objects(highlight_targets)
         self.statusBar().showMessage("选中高亮已显示" if visible else "选中高亮已隐藏", 2000)
 
+    def _set_scene_tree_visible(self, visible: bool):
+        if not hasattr(self, "scene_dock"):
+            return
+        self.scene_dock.setVisible(bool(visible))
+        if hasattr(self, "toggle_scene_tree_action"):
+            self.toggle_scene_tree_action.blockSignals(True)
+            self.toggle_scene_tree_action.setChecked(bool(visible))
+            self.toggle_scene_tree_action.blockSignals(False)
+        self.statusBar().showMessage("场景树已显示" if visible else "场景树已隐藏", 2000)
+
+    def _on_scene_tree_dock_visibility_changed(self, visible: bool):
+        if hasattr(self, "toggle_scene_tree_action"):
+            self.toggle_scene_tree_action.blockSignals(True)
+            self.toggle_scene_tree_action.setChecked(bool(visible))
+            self.toggle_scene_tree_action.blockSignals(False)
+
     def _sync_view_menu_actions(self):
         if hasattr(self, "toggle_axes_action"):
             self.toggle_axes_action.blockSignals(True)
@@ -497,6 +704,12 @@ class MainWindow(QMainWindow):
             self.toggle_selection_highlight_action.blockSignals(True)
             self.toggle_selection_highlight_action.setChecked(self._show_selection_highlight)
             self.toggle_selection_highlight_action.blockSignals(False)
+        if hasattr(self, "toggle_scene_tree_action"):
+            self.toggle_scene_tree_action.blockSignals(True)
+            self.toggle_scene_tree_action.setChecked(
+                bool(getattr(self, "scene_dock", None) and (not self.scene_dock.isHidden()))
+            )
+            self.toggle_scene_tree_action.blockSignals(False)
 
     def on_object_selected(self, object_id: str):
         previous_selected_id = self.selected_object_id
@@ -520,6 +733,7 @@ class MainWindow(QMainWindow):
             highlight_targets.append(source_object)
         self._highlight_objects(highlight_targets)
         self._sync_scalar_bar_action(scene_object)
+        self._sync_scalar_bar_owner_with_selection(scene_object)
         self.statusBar().showMessage(f"已选中：{scene_object.name}", 2500)
 
     def _highlight_objects(self, scene_objects):
@@ -609,6 +823,26 @@ class MainWindow(QMainWindow):
         self.toggle_scalar_bar_action.setEnabled(enabled)
         self.toggle_scalar_bar_action.setChecked(bool(enabled and scene_object.style.show_scalar_bar))
         self.toggle_scalar_bar_action.blockSignals(False)
+
+    def _sync_scalar_bar_owner_with_selection(self, scene_object):
+        render_manager = getattr(self.scene_service, "render_manager", None)
+        if render_manager is None:
+            return
+
+        has_scalar = scene_object is not None and scene_object.active_scalar is not None
+        wants_scalar_bar = bool(has_scalar and scene_object.style.show_scalar_bar and scene_object.visible)
+        owner_id = getattr(render_manager, "_scalar_bar_owner_id", None)
+
+        if wants_scalar_bar:
+            if owner_id != scene_object.object_id:
+                # 单色标模式：切换选中对象时把色标切到当前对象
+                self.scene_service.rerender_object(scene_object.object_id)
+            return
+
+        if owner_id is not None:
+            render_manager._clear_scalar_bars(self.plotter)
+            render_manager._scalar_bar_owner_id = None
+            self.plotter.render()
 
     def _apply_style_update(self, object_id: str, **updates):
         scene_object = self.scene_service.update_style(object_id, **updates)
@@ -732,13 +966,16 @@ class MainWindow(QMainWindow):
         scene_object = self.scene_service.get_object(object_id)
         if scene_object is None:
             return
+        self._polyline_owner = "slice"
         clip_bounds = np.asarray(scene_object.bounds, dtype=float) if scene_object.bounds is not None else None
         self.plotter.set_view("top")
         self.plotter.start_polyline_drawing(params["draw_z"], clip_bounds=clip_bounds)
         self.slice_panel.set_polyline_state(True, 0)
+        self.clip_panel.set_mask_state(False, 0)
         self.statusBar().showMessage(f"已开始为 {scene_object.name} 绘制折线剖面", 3000)
 
     def _cancel_polyline_drawing(self):
+        self._polyline_owner = None
         self.plotter.cancel_polyline_drawing()
 
     def _create_polyline_section(self, object_id: str, params: dict):
@@ -761,6 +998,46 @@ class MainWindow(QMainWindow):
             self._on_polyline_section_ready,
         )
 
+    def _start_mask_drawing(self, object_id: str, params: dict):
+        scene_object = self.scene_service.get_object(object_id)
+        if scene_object is None:
+            return
+        self._polyline_owner = "mask"
+        clip_bounds = np.asarray(scene_object.bounds, dtype=float) if scene_object.bounds is not None else None
+        grid_spec = None
+        if scene_object.dataset is not None and scene_object.dataset.is_regular_grid:
+            grid_spec = {
+                "origin": tuple(float(v) for v in scene_object.data.origin),
+                "spacing": tuple(float(v) for v in scene_object.data.spacing),
+                "dims": tuple(int(v) for v in scene_object.data.dimensions),
+            }
+        self.plotter.set_view("top")
+        self.plotter.start_polyline_drawing(
+            params["draw_z"],
+            clip_bounds=clip_bounds,
+            snap_to_grid=grid_spec is not None,
+            grid_spec=grid_spec,
+            show_grid_overlay=grid_spec is not None,
+        )
+        self.clip_panel.set_mask_state(True, 0)
+        self.statusBar().showMessage(f"已开始为 {scene_object.name} 绘制掩膜边界", 3000)
+
+    def _create_mask_clip(self, object_id: str):
+        points = self.plotter.get_polyline_points()
+        if len(points) < 3:
+            QMessageBox.information(self, "掩膜裁剪", "请先绘制至少三个边界点。")
+            return
+        self._run_worker(
+            "正在生成掩膜裁剪...",
+            lambda: self.scene_service.create_mask_clip_from_polyline(
+                object_id,
+                points,
+                render=False,
+                add_to_scene=False,
+            ),
+            self._on_mask_clip_ready,
+        )
+
     def _create_clip(self, object_id: str, bounds):
         self._run_worker(
             "正在应用裁剪...",
@@ -772,6 +1049,163 @@ class MainWindow(QMainWindow):
             ),
             self._on_created_objects_ready,
         )
+
+    def _create_grid_index_clip(self, object_id: str, index_bounds):
+        if self.is_grid_index_pick_active():
+            self.cancel_grid_index_pick(silent=True)
+        self._run_worker(
+            "正在按格点索引裁剪...",
+            lambda: self.scene_service.create_grid_index_clip(
+                object_id,
+                index_bounds,
+                render=False,
+                add_to_scene=False,
+            ),
+            self._on_created_objects_ready,
+        )
+
+    def is_grid_index_pick_active(self) -> bool:
+        return bool(self._grid_pick_active)
+
+    def _start_grid_index_pick(self, object_id: str):
+        scene_object = self.scene_service.get_object(object_id)
+        if scene_object is None or scene_object.dataset is None or not scene_object.dataset.is_regular_grid:
+            QMessageBox.information(self, "格点交互", "仅规则体数据支持交互选格点。")
+            return
+
+        self.cancel_grid_index_pick(silent=True)
+        self._grid_pick_active = True
+        self._grid_pick_object_id = object_id
+        self._grid_pick_dims = np.asarray(scene_object.data.dimensions, dtype=int)
+        self._grid_pick_origin = np.asarray(scene_object.data.origin, dtype=float)
+        self._grid_pick_spacing = np.asarray(scene_object.data.spacing, dtype=float)
+        self._grid_pick_anchor = None
+        self._grid_pick_current = None
+        self.plotter.set_view("top")
+        self.clip_panel.set_grid_pick_state(True, "交互中：左键选两点，Enter确认，Esc取消")
+        self.statusBar().showMessage("请在主视图左键点击两个格点角点。", 4000)
+
+    def handle_grid_index_pick_click(self, screen_pos):
+        if not self._grid_pick_active or self._grid_pick_object_id is None:
+            return
+        scene_object = self.scene_service.get_object(self._grid_pick_object_id)
+        if scene_object is None:
+            self.cancel_grid_index_pick()
+            return
+
+        z_ref = float(scene_object.bounds[5])
+        world = CoordinateConverter.screen_to_horizontal_plane(
+            self.plotter,
+            screen_pos,
+            z_ref,
+            clip_to_bounds=False,
+        )
+        if world is None:
+            self.statusBar().showMessage("当前视角无法投影到模型平面。", 2500)
+            return
+
+        grid_index = self._world_to_grid_index(np.asarray(world, dtype=float))
+        if grid_index is None:
+            return
+
+        if self._grid_pick_anchor is None:
+            self._grid_pick_anchor = grid_index
+            self._grid_pick_current = grid_index.copy()
+            self._update_grid_pick_preview()
+            self.statusBar().showMessage("已记录第一点，请点击第二点。", 2500)
+            return
+
+        self._grid_pick_current = grid_index
+        bounds = self._grid_index_bounds_from_pair(self._grid_pick_anchor, self._grid_pick_current)
+        self.clip_panel.set_grid_index_values(bounds)
+        self._update_grid_pick_preview()
+        self.finish_grid_index_pick()
+
+    def finish_grid_index_pick(self):
+        if not self._grid_pick_active:
+            return
+        if self._grid_pick_anchor is None or self._grid_pick_current is None:
+            self.statusBar().showMessage("格点范围尚未完成，请至少选择两点。", 2500)
+            return
+        bounds = self._grid_index_bounds_from_pair(self._grid_pick_anchor, self._grid_pick_current)
+        self.clip_panel.set_grid_index_values(bounds)
+        self.clip_panel.set_grid_pick_state(False, "已完成交互，可直接按格点裁剪")
+        self.statusBar().showMessage("格点范围已回填。", 2500)
+        self._grid_pick_active = False
+        self._clear_grid_pick_preview()
+
+    def cancel_grid_index_pick(self, silent: bool = False):
+        was_active = self._grid_pick_active or self._grid_pick_anchor is not None
+        self._grid_pick_active = False
+        self._grid_pick_object_id = None
+        self._grid_pick_dims = None
+        self._grid_pick_origin = None
+        self._grid_pick_spacing = None
+        self._grid_pick_anchor = None
+        self._grid_pick_current = None
+        self._clear_grid_pick_preview()
+        self.clip_panel.set_grid_pick_state(False, "未开始交互")
+        if was_active and not silent:
+            self.statusBar().showMessage("已取消格点交互。", 2500)
+
+    def _world_to_grid_index(self, world: np.ndarray):
+        if self._grid_pick_dims is None or self._grid_pick_origin is None or self._grid_pick_spacing is None:
+            return None
+        spacing = np.where(np.abs(self._grid_pick_spacing) < 1e-12, 1.0, self._grid_pick_spacing)
+        raw = np.rint((world - self._grid_pick_origin) / spacing).astype(int)
+        raw = np.clip(raw, 0, self._grid_pick_dims - 1)
+        return raw
+
+    def _grid_index_bounds_from_pair(self, a: np.ndarray, b: np.ndarray):
+        low = np.minimum(a, b).astype(int)
+        high = np.maximum(a, b).astype(int)
+        return (int(low[0]), int(high[0]), int(low[1]), int(high[1]), int(low[2]), int(high[2]))
+
+    def _grid_index_world_box_bounds(self, index_bounds):
+        if self._grid_pick_origin is None or self._grid_pick_spacing is None:
+            return None
+        ix0, ix1, iy0, iy1, iz0, iz1 = [int(v) for v in index_bounds]
+        xs = self._grid_pick_origin[0] + self._grid_pick_spacing[0] * np.array([ix0, ix1], dtype=float)
+        ys = self._grid_pick_origin[1] + self._grid_pick_spacing[1] * np.array([iy0, iy1], dtype=float)
+        zs = self._grid_pick_origin[2] + self._grid_pick_spacing[2] * np.array([iz0, iz1], dtype=float)
+        return (
+            float(min(xs)),
+            float(max(xs)),
+            float(min(ys)),
+            float(max(ys)),
+            float(min(zs)),
+            float(max(zs)),
+        )
+
+    def _update_grid_pick_preview(self):
+        self._clear_grid_pick_preview()
+        if self._grid_pick_anchor is None or self._grid_pick_current is None:
+            return
+        world_bounds = self._grid_index_world_box_bounds(
+            self._grid_index_bounds_from_pair(self._grid_pick_anchor, self._grid_pick_current)
+        )
+        if world_bounds is None:
+            return
+        box = pv.Box(bounds=world_bounds)
+        self._grid_pick_preview_actor = self.plotter.add_mesh(
+            box,
+            style="wireframe",
+            color="cyan",
+            line_width=2,
+            opacity=0.9,
+            pickable=False,
+            name="grid_pick_preview",
+        )
+        self.plotter.render()
+
+    def _clear_grid_pick_preview(self):
+        if self._grid_pick_preview_actor is None:
+            return
+        try:
+            self.plotter.remove_actor(self._grid_pick_preview_actor)
+        except Exception:
+            pass
+        self._grid_pick_preview_actor = None
 
     def _create_isosurface(self, object_id: str, value: float):
         self._run_worker(
@@ -812,16 +1246,30 @@ class MainWindow(QMainWindow):
 
     def _on_polyline_section_ready(self, result):
         self._on_created_objects_ready(result)
+        self._polyline_owner = None
+        self.plotter.cancel_polyline_drawing()
+
+    def _on_mask_clip_ready(self, result):
+        self._on_created_objects_ready(result)
+        self._polyline_owner = None
         self.plotter.cancel_polyline_drawing()
 
     def _on_polyline_points_changed(self, point_count: int):
-        self.slice_panel.set_polyline_state(self.plotter.is_polyline_drawing(), point_count)
+        if self._polyline_owner == "mask":
+            self.clip_panel.set_mask_state(self.plotter.is_polyline_drawing(), point_count)
+        else:
+            self.slice_panel.set_polyline_state(self.plotter.is_polyline_drawing(), point_count)
 
     def _on_polyline_finished(self, points):
-        self.slice_panel.set_polyline_state(False, len(points))
+        if self._polyline_owner == "mask":
+            self.clip_panel.set_mask_state(False, len(points))
+        else:
+            self.slice_panel.set_polyline_state(False, len(points))
 
     def _on_polyline_cancelled(self):
+        self._polyline_owner = None
         self.slice_panel.set_polyline_state(False, 0)
+        self.clip_panel.set_mask_state(False, 0)
 
     def _update_view_axes_position(self):
         if hasattr(self, "view_axes") and hasattr(self, "plotter"):
