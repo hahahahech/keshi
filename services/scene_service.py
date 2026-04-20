@@ -1038,7 +1038,7 @@ class SceneService:
             ordered_objects[scene_object.object_id] = scene_object
             restored.append(scene_object)
 
-        self.project.camera_state = payload.get("camera_state", {})
+        self.project.camera_state = payload.get("camera_state") or payload.get("view_state", {}).get("camera_state", {})
         self.rerender_all()
         return restored
 

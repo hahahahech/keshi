@@ -46,6 +46,7 @@ class MainWindow(QMainWindow):
         self.import_service = ImportService()
         self.project_service = ProjectService()
         self.scene_service = SceneService()
+        self.current_project_path: str | None = None
 
         self._create_menu_bar()
         self._create_status_bar()
@@ -567,22 +568,13 @@ class MainWindow(QMainWindow):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "打开工程",
-            "",
+            self.current_project_path or "",
             "可视化工程 (*.json);;所有文件 (*)",
         )
         if not file_path:
             return
         try:
-            payload = self.project_service.load_project(file_path)
-            self.scene_service.load_from_payload(payload, self.import_service)
-            self.scene_manager.rebuild(self.scene_service.all_objects())
-            self._fit_scene_to_objects()
-            if payload.get("camera_state"):
-                self.plotter.set_camera_info(payload["camera_state"])
-            else:
-                self.plotter.reset_camera()
-            self.project = self.scene_service.project
-            self.statusBar().showMessage(f"已打开工程：{Path(file_path).name}", 4000)
+            self.open_project_from_path(file_path)
         except Exception as exc:
             QMessageBox.critical(self, "打开工程失败", str(exc))
 
@@ -590,23 +582,68 @@ class MainWindow(QMainWindow):
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "保存工程",
-            "",
+            self.current_project_path or "",
             "可视化工程 (*.json);;所有文件 (*)",
         )
         if not file_path:
             return
         try:
-            camera_state = self.plotter.get_camera_info()
-            self.project_service.save_project(
-                file_path,
-                project_name=self.scene_service.project.name,
-                metadata=self.scene_service.project.metadata,
-                camera_state=camera_state,
-                objects=self.scene_service.serialize_scene(),
-            )
-            self.statusBar().showMessage(f"工程已保存：{file_path}", 4000)
+            saved_path = self.save_project_to_path(file_path)
+            self.statusBar().showMessage(f"工程已保存：{saved_path}", 4000)
         except Exception as exc:
             QMessageBox.critical(self, "保存工程失败", str(exc))
+
+    def save_project_to_path(self, file_path: str) -> str:
+        normalized_path = self._normalize_project_file_path(file_path)
+        camera_state = self.plotter.get_camera_info()
+        view_state = {
+            "camera_state": camera_state,
+            "projection_mode": self.plotter.get_projection_mode(),
+            "workspace_bounds": self.plotter.get_workspace_bounds(),
+        }
+        self.project_service.save_project(
+            normalized_path,
+            project_name=self.scene_service.project.name,
+            metadata=self.scene_service.project.metadata,
+            camera_state=camera_state,
+            view_state=view_state,
+            objects=self.scene_service.serialize_scene(),
+        )
+        self.current_project_path = normalized_path
+        return normalized_path
+
+    def open_project_from_path(self, file_path: str):
+        payload = self.project_service.load_project(file_path)
+        self.scene_service.load_from_payload(payload, self.import_service)
+        self.scene_manager.rebuild(self.scene_service.all_objects())
+
+        view_state = dict(payload.get("view_state", {}) or {})
+        workspace_bounds = view_state.get("workspace_bounds")
+        if workspace_bounds:
+            self.plotter.set_workspace_bounds(np.asarray(workspace_bounds, dtype=float))
+        else:
+            self._fit_scene_to_objects()
+
+        projection_mode = view_state.get("projection_mode")
+        if projection_mode is not None:
+            self.plotter.set_projection_mode(bool(projection_mode))
+
+        camera_state = view_state.get("camera_state") or payload.get("camera_state")
+        if camera_state:
+            self.plotter.set_camera_info(camera_state)
+        else:
+            self.plotter.reset_camera()
+
+        self.project = self.scene_service.project
+        self.current_project_path = str(Path(file_path))
+        self.statusBar().showMessage(f"已打开工程：{Path(file_path).name}", 4000)
+        return payload
+
+    def _normalize_project_file_path(self, file_path: str) -> str:
+        path = Path(file_path)
+        if path.suffix.lower() != ".json":
+            path = path.with_suffix(".json")
+        return str(path)
 
     def export_screenshot(self):
         file_path, _ = QFileDialog.getSaveFileName(

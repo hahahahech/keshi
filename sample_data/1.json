@@ -1,0 +1,492 @@
+{
+  "version": 2,
+  "project_meta": {
+    "name": "未命名"
+  },
+  "name": "未命名",
+  "metadata": {},
+  "camera_state": {
+    "position": [
+      -2262.7172394108347,
+      199.35168175840204,
+      978.7846267662551
+    ],
+    "focal_point": [
+      600.0,
+      475.0,
+      -270.0
+    ],
+    "view_up": [
+      0.3964547435277472,
+      0.03817424990769207,
+      0.9172602482274773
+    ],
+    "distance": 3135.3779727836877,
+    "orbit_center": [
+      600.0,
+      475.0,
+      -270.0
+    ]
+  },
+  "view_state": {
+    "camera_state": {
+      "position": [
+        -2262.7172394108347,
+        199.35168175840204,
+        978.7846267662551
+      ],
+      "focal_point": [
+        600.0,
+        475.0,
+        -270.0
+      ],
+      "view_up": [
+        0.3964547435277472,
+        0.03817424990769207,
+        0.9172602482274773
+      ],
+      "distance": 3135.3779727836877,
+      "orbit_center": [
+        600.0,
+        475.0,
+        -270.0
+      ]
+    },
+    "projection_mode": false,
+    "workspace_bounds": [
+      -60.0,
+      1260.0,
+      -47.5,
+      997.5,
+      -567.0,
+      27.0
+    ]
+  },
+  "objects": [
+    {
+      "object_id": "dataset_1",
+      "name": "geologic_contrast_model",
+      "object_type": "dataset",
+      "style": {
+        "color": [
+          0.75,
+          0.78,
+          0.85
+        ],
+        "opacity": 1.0,
+        "visible": true,
+        "render_mode": "volume",
+        "scalar_name": "lithology_index",
+        "colormap": "viridis",
+        "clim": [
+          1.0,
+          10.0
+        ],
+        "show_scalar_bar": true,
+        "volume_preset": "linear",
+        "threshold_range": null,
+        "opacity_curve": [
+          0.0,
+          0.15,
+          0.35,
+          0.75,
+          1.0
+        ]
+      },
+      "metadata": {},
+      "source_object_id": null,
+      "parameters": {},
+      "dataset": {
+        "name": "geologic_contrast_model",
+        "dataset_kind": "regular_grid",
+        "source_path": "H:/项目/可视化/sample_data/geologic_contrast_model.csv",
+        "metadata": {
+          "source_path": "H:/项目/可视化/sample_data/geologic_contrast_model.csv",
+          "source_name": "geologic_contrast_model",
+          "dataset_type": "regular_grid",
+          "source_schema": {
+            "file_path": "H:/项目/可视化/sample_data/geologic_contrast_model.csv",
+            "delimiter": ",",
+            "has_header": true,
+            "x_column": "x",
+            "y_column": "y",
+            "z_column": "z",
+            "scalar_columns": [
+              "lithology_index",
+              "density_true",
+              "density_inverted",
+              "density_residual",
+              "resistivity_log10_true",
+              "resistivity_log10_inverted",
+              "chargeability_mrad",
+              "magnetic_susceptibility",
+              "gravity_proxy_mgal",
+              "magnetic_proxy_nt",
+              "display_contrast_index"
+            ],
+            "units": "m",
+            "is_regular_grid": true,
+            "nx": 25,
+            "ny": 20,
+            "nz": 10,
+            "nodata": null,
+            "interpolation": "none"
+          },
+          "units": "m",
+          "nodata": null,
+          "preview_mode": false,
+          "attributes": {}
+        },
+        "import_spec": {
+          "file_path": "H:/项目/可视化/sample_data/geologic_contrast_model.csv",
+          "delimiter": ",",
+          "has_header": true,
+          "x_column": "x",
+          "y_column": "y",
+          "z_column": "z",
+          "scalar_columns": [
+            "lithology_index",
+            "density_true",
+            "density_inverted",
+            "density_residual",
+            "resistivity_log10_true",
+            "resistivity_log10_inverted",
+            "chargeability_mrad",
+            "magnetic_susceptibility",
+            "gravity_proxy_mgal",
+            "magnetic_proxy_nt",
+            "display_contrast_index"
+          ],
+          "units": "m",
+          "is_regular_grid": true,
+          "nx": 25,
+          "ny": 20,
+          "nz": 10,
+          "nodata": null,
+          "interpolation": "none"
+        },
+        "scalar_fields": {
+          "lithology_index": {
+            "name": "lithology_index",
+            "association": "point",
+            "components": 1,
+            "value_range": [
+              1.0,
+              10.0
+            ]
+          },
+          "density_true": {
+            "name": "density_true",
+            "association": "point",
+            "components": 1,
+            "value_range": [
+              1.710059,
+              3.55
+            ]
+          },
+          "density_inverted": {
+            "name": "density_inverted",
+            "association": "point",
+            "components": 1,
+            "value_range": [
+              1.819028,
+              3.246629
+            ]
+          },
+          "density_residual": {
+            "name": "density_residual",
+            "association": "point",
+            "components": 1,
+            "value_range": [
+              -0.714949,
+              0.372166
+            ]
+          },
+          "resistivity_log10_true": {
+            "name": "resistivity_log10_true",
+            "association": "point",
+            "components": 1,
+            "value_range": [
+              1.016523,
+              3.146148
+            ]
+          },
+          "resistivity_log10_inverted": {
+            "name": "resistivity_log10_inverted",
+            "association": "point",
+            "components": 1,
+            "value_range": [
+              1.237426,
+              2.740094
+            ]
+          },
+          "chargeability_mrad": {
+            "name": "chargeability_mrad",
+            "association": "point",
+            "components": 1,
+            "value_range": [
+              2.0,
+              56.504128
+            ]
+          },
+          "magnetic_susceptibility": {
+            "name": "magnetic_susceptibility",
+            "association": "point",
+            "components": 1,
+            "value_range": [
+              0.00149257,
+              0.06559945
+            ]
+          },
+          "gravity_proxy_mgal": {
+            "name": "gravity_proxy_mgal",
+            "association": "point",
+            "components": 1,
+            "value_range": [
+              -6.896447,
+              12.706901
+            ]
+          },
+          "magnetic_proxy_nt": {
+            "name": "magnetic_proxy_nt",
+            "association": "point",
+            "components": 1,
+            "value_range": [
+              0.910505,
+              76.251652
+            ]
+          },
+          "display_contrast_index": {
+            "name": "display_contrast_index",
+            "association": "point",
+            "components": 1,
+            "value_range": [
+              0.70735,
+              10.673579
+            ]
+          }
+        },
+        "active_scalar": "lithology_index",
+        "value_range": [
+          1.0,
+          10.0
+        ]
+      }
+    },
+    {
+      "object_id": "slice_1",
+      "name": "geologic_contrast_model 三向切片",
+      "object_type": "slice",
+      "style": {
+        "color": [
+          0.75,
+          0.78,
+          0.85
+        ],
+        "opacity": 1.0,
+        "visible": true,
+        "render_mode": "surface",
+        "scalar_name": "lithology_index",
+        "colormap": "viridis",
+        "clim": [
+          1.0,
+          10.0
+        ],
+        "show_scalar_bar": true,
+        "volume_preset": "linear",
+        "threshold_range": null,
+        "opacity_curve": [
+          0.0,
+          0.15,
+          0.35,
+          0.75,
+          1.0
+        ]
+      },
+      "metadata": {},
+      "source_object_id": "dataset_1",
+      "parameters": {
+        "kind": "orthogonal",
+        "x": 600.0,
+        "y": 475.0,
+        "z": -270.0
+      },
+      "dataset": {
+        "name": "geologic_contrast_model 三向切片",
+        "dataset_kind": "unstructured_grid",
+        "source_path": "H:/项目/可视化/sample_data/geologic_contrast_model.csv",
+        "metadata": {
+          "source_path": "H:/项目/可视化/sample_data/geologic_contrast_model.csv",
+          "source_name": "geologic_contrast_model 三向切片",
+          "dataset_type": "unstructured_grid",
+          "source_schema": {
+            "file_path": "H:/项目/可视化/sample_data/geologic_contrast_model.csv",
+            "delimiter": ",",
+            "has_header": true,
+            "x_column": "x",
+            "y_column": "y",
+            "z_column": "z",
+            "scalar_columns": [
+              "lithology_index",
+              "density_true",
+              "density_inverted",
+              "density_residual",
+              "resistivity_log10_true",
+              "resistivity_log10_inverted",
+              "chargeability_mrad",
+              "magnetic_susceptibility",
+              "gravity_proxy_mgal",
+              "magnetic_proxy_nt",
+              "display_contrast_index"
+            ],
+            "units": "m",
+            "is_regular_grid": true,
+            "nx": 25,
+            "ny": 20,
+            "nz": 10,
+            "nodata": null,
+            "interpolation": "none"
+          },
+          "units": "m",
+          "nodata": null,
+          "preview_mode": false,
+          "attributes": {}
+        },
+        "import_spec": {
+          "file_path": "H:/项目/可视化/sample_data/geologic_contrast_model.csv",
+          "delimiter": ",",
+          "has_header": true,
+          "x_column": "x",
+          "y_column": "y",
+          "z_column": "z",
+          "scalar_columns": [
+            "lithology_index",
+            "density_true",
+            "density_inverted",
+            "density_residual",
+            "resistivity_log10_true",
+            "resistivity_log10_inverted",
+            "chargeability_mrad",
+            "magnetic_susceptibility",
+            "gravity_proxy_mgal",
+            "magnetic_proxy_nt",
+            "display_contrast_index"
+          ],
+          "units": "m",
+          "is_regular_grid": true,
+          "nx": 25,
+          "ny": 20,
+          "nz": 10,
+          "nodata": null,
+          "interpolation": "none"
+        },
+        "scalar_fields": {
+          "chargeability_mrad": {
+            "name": "chargeability_mrad",
+            "association": "point",
+            "components": 1,
+            "value_range": [
+              2.0,
+              47.3811775
+            ]
+          },
+          "density_inverted": {
+            "name": "density_inverted",
+            "association": "point",
+            "components": 1,
+            "value_range": [
+              1.855374,
+              3.008952
+            ]
+          },
+          "density_residual": {
+            "name": "density_residual",
+            "association": "point",
+            "components": 1,
+            "value_range": [
+              -0.4433215,
+              0.258359
+            ]
+          },
+          "density_true": {
+            "name": "density_true",
+            "association": "point",
+            "components": 1,
+            "value_range": [
+              1.755647,
+              3.2434165
+            ]
+          },
+          "display_contrast_index": {
+            "name": "display_contrast_index",
+            "association": "point",
+            "components": 1,
+            "value_range": [
+              0.788415,
+              8.373119500000001
+            ]
+          },
+          "gravity_proxy_mgal": {
+            "name": "gravity_proxy_mgal",
+            "association": "point",
+            "components": 1,
+            "value_range": [
+              -6.519963,
+              7.9354885
+            ]
+          },
+          "lithology_index": {
+            "name": "lithology_index",
+            "association": "point",
+            "components": 1,
+            "value_range": [
+              1.0,
+              7.0
+            ]
+          },
+          "magnetic_proxy_nt": {
+            "name": "magnetic_proxy_nt",
+            "association": "point",
+            "components": 1,
+            "value_range": [
+              1.5422215000000001,
+              58.244603999999995
+            ]
+          },
+          "magnetic_susceptibility": {
+            "name": "magnetic_susceptibility",
+            "association": "point",
+            "components": 1,
+            "value_range": [
+              0.0018165249999999998,
+              0.050151310000000004
+            ]
+          },
+          "resistivity_log10_inverted": {
+            "name": "resistivity_log10_inverted",
+            "association": "point",
+            "components": 1,
+            "value_range": [
+              1.266673,
+              2.6937925
+            ]
+          },
+          "resistivity_log10_true": {
+            "name": "resistivity_log10_true",
+            "association": "point",
+            "components": 1,
+            "value_range": [
+              1.034966,
+              3.1397915000000003
+            ]
+          }
+        },
+        "active_scalar": "chargeability_mrad",
+        "value_range": [
+          2.0,
+          47.3811775
+        ]
+      }
+    }
+  ]
+}
