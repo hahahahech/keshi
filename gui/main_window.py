@@ -24,6 +24,8 @@ from gui.view_axes_2d import ViewAxes2D
 from gui.well_log_import_dialog import WellLogImportDialog
 from services import ImportService, ProjectService, SceneService
 
+WELL_LOG_OBJECT_TYPE = "drillhole"
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -109,6 +111,9 @@ class MainWindow(QMainWindow):
         clear_derived_action = QAction("清除派生对象", self)
         clear_derived_action.triggered.connect(self.clear_derived_objects)
         tools_menu.addAction(clear_derived_action)
+        drillhole_action = QAction("执行钻孔映射", self)
+        drillhole_action.triggered.connect(self.run_drillhole_mapping)
+        tools_menu.addAction(drillhole_action)
         open_slice_action = QAction("打开切片窗口", self)
         open_slice_action.triggered.connect(self.show_slice_window)
         tools_menu.addAction(open_slice_action)
@@ -544,7 +549,7 @@ class MainWindow(QMainWindow):
             dataset,
             render=True,
             name=dataset.name,
-            object_type="dataset",
+            object_type=WELL_LOG_OBJECT_TYPE,
         )
         self.scene_manager.add_object(scene_object)
         self.on_object_selected(scene_object.object_id)
@@ -1378,6 +1383,95 @@ class MainWindow(QMainWindow):
             ),
             self._on_created_objects_ready,
         )
+
+    def run_drillhole_mapping(self):
+        source_object = self._pick_drillhole_source_object()
+        if source_object is None:
+            QMessageBox.information(self, "钻孔映射", "请先导入并选中一个体数据对象。")
+            return
+        well_objects = [
+            scene_object
+            for scene_object in self.scene_service.all_objects()
+            if scene_object.dataset is not None and self._is_well_log_scene_object(scene_object)
+        ]
+        if not well_objects:
+            QMessageBox.information(self, "钻孔映射", "请先导入测井数据对象。")
+            return
+
+        well_object = well_objects[0]
+        if len(well_objects) > 1:
+            names = [scene_object.name for scene_object in well_objects]
+            selected_name, ok = QInputDialog.getItem(
+                self,
+                "选择测井对象",
+                "请选择用于钻孔映射的测井对象：",
+                names,
+                0,
+                False,
+            )
+            if not ok:
+                return
+            for scene_object in well_objects:
+                if scene_object.name == selected_name:
+                    well_object = scene_object
+                    break
+
+        bounds = np.asarray(source_object.bounds, dtype=float)
+        default_radius = max((bounds[1] - bounds[0]) * 0.015, 1.0)
+        radius, ok = QInputDialog.getDouble(
+            self,
+            "钻孔映射",
+            "井筒半径：",
+            float(default_radius),
+            0.001,
+            1e9,
+            3,
+        )
+        if not ok:
+            return
+
+        overlay_ids = [
+            scene_object.object_id
+            for scene_object in self.scene_service.all_objects()
+            if scene_object.object_id not in {source_object.object_id, well_object.object_id}
+            and scene_object.dataset is not None
+            and not scene_object.dataset.is_regular_grid
+            and not scene_object.dataset.is_point_set
+            and scene_object.object_type in {"dataset", "isosurface"}
+        ]
+        self._run_worker(
+            "正在执行钻孔映射...",
+            lambda: self.scene_service.create_drillhole_mapping(
+                source_object.object_id,
+                well_object_id=well_object.object_id,
+                overlay_object_ids=overlay_ids,
+                radius=float(radius),
+                render=False,
+                add_to_scene=False,
+            ),
+            self._on_created_objects_ready,
+        )
+
+    def _pick_drillhole_source_object(self):
+        selected = self._get_selected_scene_object()
+        if (
+            selected is not None
+            and selected.dataset is not None
+            and selected.object_type == "dataset"
+            and not self._is_well_log_scene_object(selected)
+        ):
+            return selected
+        for scene_object in self.scene_service.all_objects():
+            if scene_object.dataset is None:
+                continue
+            if scene_object.object_type != "dataset":
+                continue
+            if self._is_well_log_scene_object(scene_object):
+                continue
+            if scene_object.dataset.is_point_set:
+                continue
+            return scene_object
+        return None
 
     def _on_created_objects_ready(self, result):
         if result is None:

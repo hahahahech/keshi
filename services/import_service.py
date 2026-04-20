@@ -297,7 +297,7 @@ class ImportService:
         metadata = DatasetMetadata(
             source_path=file_path,
             source_name=dataset_name,
-            dataset_type="well_log",
+            dataset_type="drillhole_data",
             source_schema={
                 "loader": "well_log",
                 "delimiter": delimiter,

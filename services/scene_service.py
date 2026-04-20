@@ -624,6 +624,168 @@ class SceneService:
             parameters=parameters,
         )
 
+    def build_well_trajectory_points(
+        self,
+        *,
+        well_object_id: str | None = None,
+        trajectory_points=None,
+        well_index: int | None = None,
+        well_name: str | None = None,
+    ) -> np.ndarray:
+        if trajectory_points is not None:
+            return self._normalize_polyline_points(trajectory_points)
+
+        if not well_object_id:
+            raise ValueError("请提供井数据对象 ID 或显式井轨迹点。")
+        well_object = self._require_object(well_object_id)
+        data = well_object.data
+        points = np.asarray(data.points, dtype=float)
+        if points.ndim != 2 or points.shape[1] != 3 or points.shape[0] < 2:
+            raise ValueError("井轨迹点不足，无法生成井筒。")
+
+        selected_well_index = self._resolve_well_index(well_object, well_index=well_index, well_name=well_name)
+        well_indices = self._extract_point_data_array(data, "well_index")
+        depth_values = self._extract_point_data_array(data, "depth")
+
+        if selected_well_index is not None and well_indices is not None:
+            mask = well_indices == int(selected_well_index)
+            selected_indices = np.where(mask)[0]
+        else:
+            selected_indices = np.arange(points.shape[0], dtype=int)
+
+        if selected_indices.size < 2:
+            raise ValueError("选定井的有效轨迹点不足两个。")
+
+        polyline_ids = self._extract_well_polyline_ids(
+            data,
+            selected_indices=selected_indices,
+            well_indices=well_indices,
+            selected_well_index=selected_well_index,
+        )
+        if polyline_ids is not None and polyline_ids.size >= 2:
+            return points[polyline_ids]
+
+        selected_points = points[selected_indices]
+        selected_depth = depth_values[selected_indices] if depth_values is not None else None
+        return self._sort_well_points(selected_points, selected_depth)
+
+    def create_drillhole_mapping(
+        self,
+        source_object_id: str,
+        *,
+        well_object_id: str | None = None,
+        trajectory_points=None,
+        overlay_object_ids: list[str] | None = None,
+        well_index: int | None = None,
+        well_name: str | None = None,
+        radius: float = 25.0,
+        tube_sides: int = 16,
+        render: bool = True,
+        add_to_scene: bool = True,
+    ) -> list[DatasetSceneObject]:
+        source_object = self._require_object(source_object_id)
+        if radius <= 0:
+            raise ValueError("井筒半径必须大于 0。")
+        if int(tube_sides) < 6:
+            raise ValueError("井筒边数至少为 6。")
+
+        trajectory = self.build_well_trajectory_points(
+            well_object_id=well_object_id,
+            trajectory_points=trajectory_points,
+            well_index=well_index,
+            well_name=well_name,
+        )
+        trajectory_line = self._build_polyline_from_points(trajectory)
+        tube = trajectory_line.tube(
+            radius=float(radius),
+            n_sides=int(tube_sides),
+            capping=True,
+        ).triangulate()
+        tube_display_data, tube_scalar_name, tube_scalar_range = self._build_drillhole_tube_display_data(
+            tube,
+            source_object,
+        )
+
+        result_objects: list[DatasetSceneObject] = []
+        drilled_data = self._apply_drillhole_mask(source_object.data, tube)
+        drilled_object = self._add_derived_object(
+            source_object,
+            drilled_data,
+            object_type="clip",
+            name=f"{source_object.name} 钻孔后",
+            render=render,
+            add_to_scene=add_to_scene,
+            parameters={
+                "clip_kind": "drillhole",
+                "radius": float(radius),
+                "tube_sides": int(tube_sides),
+                "well_object_id": str(well_object_id or ""),
+            },
+        )
+        result_objects.append(drilled_object)
+
+        trajectory_object = self._add_helper_object(
+            trajectory_line,
+            name="井轨迹",
+            color=(1.0, 0.82, 0.2),
+            render_mode="wireframe",
+            source_object_id=well_object_id or source_object_id,
+            parameters={
+                "kind": "well_trajectory",
+                "points": [[float(v) for v in row] for row in trajectory.tolist()],
+            },
+            render=render,
+            add_to_scene=add_to_scene,
+        )
+        result_objects.append(trajectory_object)
+
+        tube_object = self._add_helper_object(
+            tube_display_data,
+            name="井筒",
+            color=(0.95, 0.2, 0.2),
+            render_mode="surface",
+            source_object_id=well_object_id or source_object_id,
+            parameters={
+                "kind": "well_tube",
+                "radius": float(radius),
+                "tube_sides": int(tube_sides),
+            },
+            scalar_name=tube_scalar_name,
+            clim=tube_scalar_range,
+            colormap=source_object.style.colormap,
+            render=render,
+            add_to_scene=add_to_scene,
+        )
+        result_objects.append(tube_object)
+
+        overlay_ids = list(overlay_object_ids or [])
+        for overlay_id in overlay_ids:
+            if overlay_id in {source_object_id, well_object_id}:
+                continue
+            overlay_object = self.get_object(overlay_id)
+            if overlay_object is None or overlay_object.dataset is None:
+                continue
+            clipped_overlay_data = self._apply_drillhole_mask(overlay_object.data, tube)
+            if not self._result_has_geometry(clipped_overlay_data):
+                continue
+            overlay_result = self._add_derived_object(
+                overlay_object,
+                clipped_overlay_data,
+                object_type="clip",
+                name=f"{overlay_object.name} 钻孔同步裁剪",
+                render=render,
+                add_to_scene=add_to_scene,
+                parameters={
+                    "clip_kind": "drillhole_sync",
+                    "radius": float(radius),
+                    "tube_sides": int(tube_sides),
+                    "source_volume_id": source_object_id,
+                    "well_object_id": str(well_object_id or ""),
+                },
+            )
+            result_objects.append(overlay_result)
+        return result_objects
+
     def create_isosurface(
         self,
         source_object_id: str,
@@ -1340,6 +1502,279 @@ class SceneService:
                 flat[~mask_cells] = np.nan
                 result.cell_data[name] = flat
         return result
+
+    def _apply_drillhole_mask(self, data: pv.DataSet, tube_surface: pv.PolyData) -> pv.DataSet:
+        if isinstance(data, pv.ImageData):
+            return self._mask_regular_grid_with_tube(data, tube_surface)
+        return self._clip_mesh_with_tube(data, tube_surface)
+
+    def _mask_regular_grid_with_tube(self, data: pv.ImageData, tube_surface: pv.PolyData) -> pv.ImageData:
+        result = data.copy(deep=True)
+        point_distance_data = data.compute_implicit_distance(tube_surface, inplace=False)
+        point_distances = np.asarray(point_distance_data.point_data["implicit_distance"], dtype=float).reshape(-1)
+        inside_points = point_distances <= 0.0
+        if not np.any(inside_points):
+            return result
+
+        for name in list(result.point_data.keys()):
+            values = np.asarray(result.point_data[name])
+            flat = values.reshape(-1).astype(float, copy=True)
+            if flat.size != inside_points.size:
+                continue
+            flat[inside_points] = np.nan
+            result.point_data[name] = flat
+
+        if result.n_cells > 0 and len(result.cell_data.keys()) > 0:
+            cell_distance_data = data.cell_centers().compute_implicit_distance(tube_surface, inplace=False)
+            cell_distances = np.asarray(cell_distance_data.point_data["implicit_distance"], dtype=float).reshape(-1)
+            inside_cells = cell_distances <= 0.0
+            for name in list(result.cell_data.keys()):
+                values = np.asarray(result.cell_data[name])
+                flat = values.reshape(-1).astype(float, copy=True)
+                if flat.size != inside_cells.size:
+                    continue
+                flat[inside_cells] = np.nan
+                result.cell_data[name] = flat
+        return result
+
+    def _clip_mesh_with_tube(self, data: pv.DataSet, tube_surface: pv.PolyData) -> pv.DataSet:
+        if int(getattr(data, "n_cells", 0)) <= 0:
+            return data.copy(deep=True)
+
+        working = data.copy(deep=True)
+        centers = working.cell_centers()
+        center_with_distance = centers.compute_implicit_distance(tube_surface, inplace=False)
+        cell_distances = np.asarray(center_with_distance.point_data["implicit_distance"], dtype=float).reshape(-1)
+        if cell_distances.size != int(getattr(working, "n_cells", 0)):
+            return working
+
+        working.cell_data["__drill_dist__"] = cell_distances
+        clipped = working.threshold(
+            value=0.0,
+            scalars="__drill_dist__",
+            preference="cell",
+            invert=False,
+        )
+        if "__drill_dist__" in clipped.cell_data:
+            del clipped.cell_data["__drill_dist__"]
+        if "__drill_dist__" in clipped.point_data:
+            del clipped.point_data["__drill_dist__"]
+        return clipped
+
+    def _build_drillhole_tube_display_data(
+        self,
+        tube_surface: pv.PolyData,
+        source_object,
+    ) -> tuple[pv.PolyData, str | None, tuple[float, float] | None]:
+        scalar_name = source_object.active_scalar
+        if scalar_name is None:
+            return tube_surface, None, None
+
+        sampled_tube = self._sample_surface_scalar(tube_surface, source_object.data, scalar_name)
+        if sampled_tube is None:
+            return tube_surface, None, None
+
+        scalar_range = source_object.style.clim or self._extract_data_scalar_range(sampled_tube, scalar_name)
+        return sampled_tube, scalar_name, scalar_range
+
+    def _sample_surface_scalar(
+        self,
+        surface: pv.PolyData,
+        source_data: pv.DataSet,
+        scalar_name: str,
+    ) -> pv.PolyData | None:
+        candidates = [source_data]
+        if scalar_name in source_data.cell_data and scalar_name not in source_data.point_data:
+            try:
+                candidates.append(source_data.cell_data_to_point_data(pass_cell_data=True))
+            except Exception:
+                pass
+
+        for candidate in candidates:
+            try:
+                sampled = surface.sample(candidate)
+            except Exception:
+                continue
+            if self._has_finite_scalar(sampled, scalar_name):
+                return sampled
+        return None
+
+    def _extract_data_scalar_range(
+        self,
+        data: pv.DataSet,
+        scalar_name: str,
+    ) -> tuple[float, float] | None:
+        values = self._extract_scalar_values(data, scalar_name)
+        if values is None:
+            return None
+        finite = values[np.isfinite(values)]
+        if finite.size == 0:
+            return None
+        return (float(np.min(finite)), float(np.max(finite)))
+
+    def _has_finite_scalar(self, data: pv.DataSet, scalar_name: str) -> bool:
+        values = self._extract_scalar_values(data, scalar_name)
+        return values is not None and bool(np.isfinite(values).any())
+
+    def _extract_scalar_values(self, data: pv.DataSet, scalar_name: str) -> np.ndarray | None:
+        if scalar_name in data.point_data:
+            return np.asarray(data.point_data[scalar_name], dtype=float).reshape(-1)
+        if scalar_name in data.cell_data:
+            return np.asarray(data.cell_data[scalar_name], dtype=float).reshape(-1)
+        return None
+
+    def _add_helper_object(
+        self,
+        data: pv.DataSet,
+        *,
+        name: str,
+        color: tuple[float, float, float] | None,
+        render_mode: str,
+        source_object_id: str,
+        parameters: dict[str, Any],
+        render: bool,
+        add_to_scene: bool,
+        scalar_name: str | None = None,
+        clim: tuple[float, float] | None = None,
+        colormap: str = "viridis",
+        show_scalar_bar: bool = False,
+    ) -> DatasetSceneObject:
+        dataset = create_dataset_from_pyvista(
+            data,
+            source_path="",
+            name=name,
+            metadata=DatasetMetadata(
+                source_path="",
+                source_name=name,
+                dataset_type="helper",
+                source_schema={"operation": "drillhole_helper"},
+            ),
+            import_spec=None,
+        )
+        active_scalar = scalar_name if scalar_name in dataset.scalar_fields else None
+        scalar_range = clim
+        if active_scalar is not None and scalar_range is None:
+            scalar_range = dataset.get_scalar_range(active_scalar)
+        style = RenderStyle(
+            visible=True,
+            opacity=1.0,
+            color=tuple(float(v) for v in color) if color is not None else None,
+            scalar_name=active_scalar,
+            colormap=colormap,
+            clim=scalar_range,
+            show_scalar_bar=bool(show_scalar_bar and active_scalar),
+            render_mode=render_mode,
+        ).normalized()
+        if add_to_scene:
+            return self.add_dataset(
+                dataset,
+                render=render,
+                name=name,
+                object_type="helper",
+                style=style,
+                source_object_id=source_object_id,
+                parameters=parameters,
+            )
+        return self.create_dataset_object(
+            dataset,
+            name=name,
+            object_type="helper",
+            style=style,
+            source_object_id=source_object_id,
+            parameters=parameters,
+        )
+
+    def _resolve_well_index(
+        self,
+        well_object,
+        *,
+        well_index: int | None,
+        well_name: str | None,
+    ) -> int | None:
+        if well_index is not None:
+            return int(well_index)
+        if well_name is None:
+            return None
+        schema = dict(getattr(well_object.dataset, "source_schema", {}) or {})
+        well_ids = [str(value) for value in schema.get("well_ids", [])]
+        if not well_ids:
+            raise ValueError("井数据中不存在井号映射。")
+        target = str(well_name).strip()
+        if target not in well_ids:
+            raise ValueError(f"未找到井号：{target}")
+        return int(well_ids.index(target))
+
+    def _extract_point_data_array(self, data: pv.DataSet, name: str) -> np.ndarray | None:
+        if name not in data.point_data:
+            return None
+        values = np.asarray(data.point_data[name]).reshape(-1)
+        if values.size != int(getattr(data, "n_points", 0)):
+            return None
+        return values
+
+    def _extract_well_polyline_ids(
+        self,
+        data: pv.DataSet,
+        *,
+        selected_indices: np.ndarray,
+        well_indices: np.ndarray | None,
+        selected_well_index: int | None,
+    ) -> np.ndarray | None:
+        lines = np.asarray(getattr(data, "lines", np.empty(0)), dtype=np.int64).reshape(-1)
+        if lines.size <= 0:
+            return None
+
+        selected_set = set(int(value) for value in selected_indices.tolist())
+        candidates: list[np.ndarray] = []
+        cursor = 0
+        while cursor < lines.size:
+            count = int(lines[cursor])
+            cursor += 1
+            if count <= 1 or cursor + count > lines.size:
+                break
+            ids = np.asarray(lines[cursor : cursor + count], dtype=np.int64)
+            cursor += count
+            if selected_set:
+                overlap = [idx for idx in ids.tolist() if int(idx) in selected_set]
+                if len(overlap) >= 2:
+                    candidates.append(np.asarray(overlap, dtype=np.int64))
+                    continue
+            candidates.append(ids)
+
+        if not candidates:
+            return None
+
+        if selected_well_index is not None and well_indices is not None:
+            scored = []
+            for ids in candidates:
+                local = well_indices[ids]
+                score = int(np.sum(local == selected_well_index))
+                scored.append((score, ids))
+            scored.sort(key=lambda item: (item[0], item[1].size), reverse=True)
+            best = scored[0][1]
+            if scored[0][0] >= 2:
+                return best
+        candidates.sort(key=lambda item: item.size, reverse=True)
+        return candidates[0]
+
+    def _sort_well_points(self, points: np.ndarray, depth_values: np.ndarray | None) -> np.ndarray:
+        if depth_values is not None:
+            finite = np.isfinite(depth_values)
+            if np.any(finite):
+                fill = np.nanmax(depth_values[finite]) + 1.0
+                sortable = np.where(finite, depth_values, fill)
+                order = np.argsort(sortable, kind="stable")
+                return points[order]
+        order = np.argsort(-points[:, 2], kind="stable")
+        return points[order]
+
+    def _build_polyline_from_points(self, points: np.ndarray) -> pv.PolyData:
+        line = pv.PolyData(np.asarray(points, dtype=float))
+        count = int(line.n_points)
+        if count < 2:
+            raise ValueError("井轨迹点不足两个。")
+        line.lines = np.concatenate(([count], np.arange(count, dtype=np.int64)))
+        return line
 
     def _points_inside_polygon_xy(
         self,

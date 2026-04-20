@@ -33,7 +33,7 @@ class MainWindowWellLogImportTests(unittest.TestCase):
         finally:
             handle.close()
 
-    def test_import_well_log_data_adds_dataset_object_to_scene(self):
+    def test_import_well_log_data_adds_drillhole_object_to_scene(self):
         window = MainWindow()
         path = self._write_temp_csv(
             "\n".join(
@@ -67,9 +67,9 @@ class MainWindowWellLogImportTests(unittest.TestCase):
             ):
                 window.import_well_log_data()
 
-            dataset_objects = [obj for obj in window.scene_service.all_objects() if obj.object_type == "dataset"]
-            self.assertGreaterEqual(len(dataset_objects), 1)
-            target = dataset_objects[-1]
+            drillhole_objects = [obj for obj in window.scene_service.all_objects() if obj.object_type == "drillhole"]
+            self.assertGreaterEqual(len(drillhole_objects), 1)
+            target = drillhole_objects[-1]
             self.assertEqual(target.name, "井A")
             self.assertGreater(target.data.n_points, 0)
             self.assertGreaterEqual(target.data.n_lines, 1)

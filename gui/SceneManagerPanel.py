@@ -37,6 +37,9 @@ OBJECT_TYPE_LABELS = {
 }
 
 
+OBJECT_TYPE_LABELS["drillhole"] = "钻孔数据"
+
+
 class OpacityEditor(QDoubleSpinBox):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -113,6 +116,7 @@ class SceneManagerPanel(QWidget):
     def add_object(self, scene_object, category=None):
         root_alias = {
             "section": "slice",
+            "drillhole": "dataset",
         }
         inferred_type = root_alias.get(scene_object.object_type, scene_object.object_type)
         root_type = category or inferred_type
@@ -250,7 +254,7 @@ class SceneManagerPanel(QWidget):
         kind = str(params.get("kind") or "").lower()
         is_slice_like = object_type == "slice" or kind in {"axis", "orthogonal", "plane"}
 
-        if object_type == "dataset":
+        if object_type in {"dataset", "drillhole"}:
             open_property_action = QAction("打开属性控制", self.tree_widget)
             open_property_action.triggered.connect(
                 lambda: self.openPropertyRequested.emit(item.object_id)
