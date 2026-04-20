@@ -2,7 +2,7 @@
 交互式建模视图核心类
 """
 from PyQt6.QtWidgets import QLabel, QToolButton, QMenu, QWidgetAction, QWidget, QVBoxLayout
-from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QSize
+from PyQt6.QtCore import Qt, pyqtSignal, QPoint, QSize, QTimer
 from PyQt6.QtGui import QFont, QIcon, QPixmap, QAction
 import os
 from pyvistaqt import QtInteractor
@@ -71,6 +71,15 @@ class InteractiveView(QtInteractor):
         self._is_rotating = False
         self._is_panning = False
         self._is_zooming = False
+        self._navigation_pressed_keys: set[int] = set()
+        self._navigation_boost_active = False
+        self._navigation_timer_interval_seconds = 1.0 / 60.0
+        self._navigation_speed = 1.0
+        self._navigation_boost_multiplier = 2.5
+        self._navigation_timer = QTimer(self)
+        self._navigation_timer.setInterval(int(self._navigation_timer_interval_seconds * 1000.0))
+        self._navigation_timer.timeout.connect(self._on_navigation_timer_tick)
+        self._update_navigation_speed()
 
         # 折线剖面绘制状态
         self._polyline_drawing = False
@@ -195,6 +204,7 @@ class InteractiveView(QtInteractor):
             新的边界 [xmin, xmax, ymin, ymax, zmin, zmax]
         """
         self.workspace_bounds = np.array(bounds, dtype=np.float64)
+        self._update_navigation_speed()
         
         # 重新计算轨道中心
         self._orbit_center = self._calculate_workspace_center()
@@ -773,6 +783,140 @@ class InteractiveView(QtInteractor):
     
     # ========== 摄像机控制公共 API ==========
     
+    # ========== 键盘导航 ==========
+
+    def _update_navigation_speed(self):
+        bounds = np.asarray(self.workspace_bounds, dtype=float).reshape(-1)
+        spans = np.array(
+            [
+                max(float(bounds[1] - bounds[0]), 1e-6),
+                max(float(bounds[3] - bounds[2]), 1e-6),
+                max(float(bounds[5] - bounds[4]), 1e-6),
+            ],
+            dtype=float,
+        )
+        diagonal = float(np.linalg.norm(spans))
+        self._navigation_speed = max(diagonal * 0.35, 0.5)
+
+    def _is_navigation_key(self, key: int) -> bool:
+        return key in {
+            int(Qt.Key.Key_W),
+            int(Qt.Key.Key_A),
+            int(Qt.Key.Key_S),
+            int(Qt.Key.Key_D),
+            int(Qt.Key.Key_Q),
+            int(Qt.Key.Key_E),
+        }
+
+    def _is_navigation_blocked_by_modifiers(self, modifiers) -> bool:
+        blocked = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier
+        return bool(modifiers & blocked)
+
+    def _sync_navigation_timer(self):
+        should_run = bool(self._navigation_pressed_keys)
+        if should_run and not self._navigation_timer.isActive():
+            self._navigation_timer.start()
+        elif (not should_run) and self._navigation_timer.isActive():
+            self._navigation_timer.stop()
+
+    def _clear_navigation_state(self):
+        self._navigation_pressed_keys.clear()
+        self._navigation_boost_active = False
+        if self._navigation_timer.isActive():
+            self._navigation_timer.stop()
+
+    def handle_navigation_key_event(self, key: int, *, pressed: bool, modifiers, auto_repeat: bool) -> bool:
+        key_value = int(key)
+        if auto_repeat:
+            return self._is_navigation_key(key_value) or key_value == int(Qt.Key.Key_Shift)
+
+        if key_value == int(Qt.Key.Key_Shift):
+            self._navigation_boost_active = bool(pressed)
+            return True
+
+        if not self._is_navigation_key(key_value):
+            return False
+        if self._is_navigation_blocked_by_modifiers(modifiers):
+            return False
+        if self.is_polyline_drawing():
+            return False
+
+        if pressed:
+            self._navigation_pressed_keys.add(key_value)
+        else:
+            self._navigation_pressed_keys.discard(key_value)
+        self._sync_navigation_timer()
+        return True
+
+    def _on_navigation_timer_tick(self):
+        self._apply_keyboard_navigation_step(self._navigation_timer_interval_seconds)
+
+    def _apply_keyboard_navigation_step(self, delta_seconds: float) -> bool:
+        if not self._navigation_pressed_keys:
+            return False
+
+        camera = self.renderer.GetActiveCamera()
+        position = np.array(camera.GetPosition(), dtype=float)
+        focal_point = np.array(camera.GetFocalPoint(), dtype=float)
+        view_up = np.array(camera.GetViewUp(), dtype=float)
+
+        forward = focal_point - position
+        forward_norm = float(np.linalg.norm(forward))
+        if forward_norm <= 1e-9:
+            return False
+        forward = forward / forward_norm
+
+        world_up = np.array([0.0, 0.0, 1.0], dtype=float)
+        right = np.cross(forward, world_up)
+        right_norm = float(np.linalg.norm(right))
+        if right_norm <= 1e-9:
+            right = np.cross(forward, view_up)
+            right_norm = float(np.linalg.norm(right))
+        if right_norm <= 1e-9:
+            return False
+        right = right / right_norm
+
+        move = np.zeros(3, dtype=float)
+        if int(Qt.Key.Key_W) in self._navigation_pressed_keys:
+            move += forward
+        if int(Qt.Key.Key_S) in self._navigation_pressed_keys:
+            move -= forward
+        if int(Qt.Key.Key_A) in self._navigation_pressed_keys:
+            move -= right
+        if int(Qt.Key.Key_D) in self._navigation_pressed_keys:
+            move += right
+        if int(Qt.Key.Key_Q) in self._navigation_pressed_keys:
+            move -= world_up
+        if int(Qt.Key.Key_E) in self._navigation_pressed_keys:
+            move += world_up
+
+        move_norm = float(np.linalg.norm(move))
+        if move_norm <= 1e-9:
+            return False
+        move_direction = move / move_norm
+
+        speed = float(self._navigation_speed)
+        if self._navigation_boost_active:
+            speed *= float(self._navigation_boost_multiplier)
+        step = move_direction * speed * max(float(delta_seconds), 0.0)
+
+        new_position = position + step
+        new_focal_point = focal_point + step
+        bounds = np.asarray(self.workspace_bounds, dtype=float).reshape(-1)
+        mins = np.array([bounds[0], bounds[2], bounds[4]], dtype=float)
+        maxs = np.array([bounds[1], bounds[3], bounds[5]], dtype=float)
+        new_position = np.minimum(np.maximum(new_position, mins), maxs)
+        new_focal_point = np.minimum(np.maximum(new_focal_point, mins), maxs)
+
+        if float(np.linalg.norm(new_focal_point - new_position)) <= 1e-9:
+            new_focal_point = np.minimum(np.maximum(new_position + forward * 0.5, mins), maxs)
+
+        camera.SetPosition(new_position)
+        camera.SetFocalPoint(new_focal_point)
+        camera.SetViewUp(view_up)
+        CameraController._finalize_camera_update(self)
+        return True
+
     def get_camera_info(self) -> dict:
         """获取当前摄像机信息"""
         return CameraController.get_camera_info(self)
@@ -804,6 +948,15 @@ class InteractiveView(QtInteractor):
     def keyPressEvent(self, event):
         """键盘事件处理"""
         EventHandler.key_press_event(self, event)
+
+    def keyReleaseEvent(self, event):
+        """键盘释放事件处理"""
+        EventHandler.key_release_event(self, event)
+
+    def focusOutEvent(self, event):
+        """焦点丢失时清理键盘导航状态"""
+        self._clear_navigation_state()
+        super().focusOutEvent(event)
 
     def contextMenuEvent(self, event):
         """右键菜单事件"""

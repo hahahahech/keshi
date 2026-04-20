@@ -77,6 +77,18 @@ class EventHandler:
 
     @staticmethod
     def key_press_event(view, event):
+        auto_repeat = bool(event.isAutoRepeat()) if hasattr(event, "isAutoRepeat") else False
+        if hasattr(view, "handle_navigation_key_event"):
+            handled = view.handle_navigation_key_event(
+                event.key(),
+                pressed=True,
+                modifiers=event.modifiers(),
+                auto_repeat=auto_repeat,
+            )
+            if handled:
+                event.accept()
+                return
+
         if view.is_polyline_drawing():
             key = event.key()
             if key == Qt.Key.Key_Escape:
@@ -98,6 +110,24 @@ class EventHandler:
         from pyvistaqt import QtInteractor
 
         QtInteractor.keyPressEvent(view, event)
+
+    @staticmethod
+    def key_release_event(view, event):
+        auto_repeat = bool(event.isAutoRepeat()) if hasattr(event, "isAutoRepeat") else False
+        if hasattr(view, "handle_navigation_key_event"):
+            handled = view.handle_navigation_key_event(
+                event.key(),
+                pressed=False,
+                modifiers=event.modifiers(),
+                auto_repeat=auto_repeat,
+            )
+            if handled:
+                event.accept()
+                return
+
+        from pyvistaqt import QtInteractor
+
+        QtInteractor.keyReleaseEvent(view, event)
 
     @staticmethod
     def context_menu_event(view, event):
