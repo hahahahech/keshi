@@ -336,6 +336,7 @@ class SceneService:
         *,
         top_z: float,
         bottom_z: float,
+        draw_plane: str = "xoy",
         line_step: float = 25.0,
         vertical_samples: int = 20,
         render: bool = True,
@@ -351,26 +352,38 @@ class SceneService:
             raise ValueError("垂向采样层数至少为 2。")
 
         points = self._normalize_polyline_points(polyline_points)
-        samples, distances = self._resample_polyline_points(points, float(line_step))
+        plane = self._normalize_draw_plane(draw_plane)
+        line_axes, section_axis = self._draw_plane_axes(plane)
+        samples, distances = self._resample_polyline_points_by_axes(points, line_axes, float(line_step))
         if np.isclose(top_z, bottom_z):
-            raise ValueError("顶部 Z 和底部 Z 不能相同。")
+            raise ValueError("剖面上界和下界不能相同。")
 
-        direction_xy = self._principal_direction_xy(points)
-        line_direction = np.array([direction_xy[0], direction_xy[1], 0.0], dtype=float)
-        profile_normal = np.cross(line_direction, np.array([0.0, 0.0, 1.0], dtype=float))
+        direction_2d = self._principal_direction_on_axes(points, line_axes)
+        line_direction = np.zeros(3, dtype=float)
+        line_direction[line_axes[0]] = direction_2d[0]
+        line_direction[line_axes[1]] = direction_2d[1]
+        section_direction = np.zeros(3, dtype=float)
+        section_direction[section_axis] = 1.0
+        profile_normal = np.cross(line_direction, section_direction)
         normal_norm = float(np.linalg.norm(profile_normal))
-        if normal_norm > 1e-12:
-            profile_normal = profile_normal / normal_norm
-        else:
-            profile_normal = np.array([1.0, 0.0, 0.0], dtype=float)
+        if normal_norm <= 1e-12:
+            raise ValueError("折线方向无效，无法生成剖面。")
+        profile_normal = profile_normal / normal_norm
 
-        vertical_levels = np.linspace(float(top_z), float(bottom_z), int(vertical_samples))
-        x_coords = np.repeat(samples[:, 0][None, :], len(vertical_levels), axis=0)
-        y_coords = np.repeat(samples[:, 1][None, :], len(vertical_levels), axis=0)
-        z_coords = np.repeat(vertical_levels[:, None], len(samples), axis=1)
+        section_levels = np.linspace(float(top_z), float(bottom_z), int(vertical_samples))
+        x_coords = np.repeat(samples[:, 0][None, :], len(section_levels), axis=0)
+        y_coords = np.repeat(samples[:, 1][None, :], len(section_levels), axis=0)
+        z_coords = np.repeat(samples[:, 2][None, :], len(section_levels), axis=0)
+        level_grid = np.repeat(section_levels[:, None], len(samples), axis=1)
+        if section_axis == 0:
+            x_coords = level_grid
+        elif section_axis == 1:
+            y_coords = level_grid
+        else:
+            z_coords = level_grid
         fence = pv.StructuredGrid(x_coords, y_coords, z_coords)
-        fence.point_data["profile_distance"] = np.repeat(distances[None, :], len(vertical_levels), axis=0).ravel(order="F")
-        fence.point_data["elevation"] = z_coords.ravel(order="F")
+        fence.point_data["profile_distance"] = np.repeat(distances[None, :], len(section_levels), axis=0).ravel(order="F")
+        fence.point_data["elevation"] = level_grid.ravel(order="F")
 
         sampled = fence.sample(scene_object.data)
         result = sampled.extract_surface()
@@ -381,6 +394,9 @@ class SceneService:
             "points": [[float(value) for value in point] for point in points.tolist()],
             "top_z": float(top_z),
             "bottom_z": float(bottom_z),
+            "section_max": float(top_z),
+            "section_min": float(bottom_z),
+            "draw_plane": plane,
             "line_step": float(line_step),
             "vertical_samples": int(vertical_samples),
             "normal": [float(value) for value in profile_normal.tolist()],
@@ -578,6 +594,7 @@ class SceneService:
         source_object_id: str,
         polyline_points,
         *,
+        draw_plane: str = "xoy",
         render: bool = True,
         add_to_scene: bool = True,
         object_id: str | None = None,
@@ -588,10 +605,12 @@ class SceneService:
         points = self._normalize_polyline_points(polyline_points)
         if points.shape[0] < 3:
             raise ValueError("掩膜边界至少需要三个点。")
-        result = self._mask_regular_grid_with_polygon_xy(scene_object.data, points)
+        plane = self._normalize_draw_plane(draw_plane)
+        result = self._mask_regular_grid_with_polygon(scene_object.data, points, draw_plane=plane)
         name = f"{scene_object.name} 掩膜裁剪结果"
         parameters = {
-            "mask_kind": "polyline_xy",
+            "mask_kind": f"polyline_{plane}",
+            "draw_plane": plane,
             "points": [[float(value) for value in row] for row in points.tolist()],
         }
         return self._add_derived_object(
@@ -793,6 +812,7 @@ class SceneService:
                         parameters["points"],
                         top_z=parameters["top_z"],
                         bottom_z=parameters["bottom_z"],
+                        draw_plane=parameters.get("draw_plane", "xoy"),
                         line_step=parameters["line_step"],
                         vertical_samples=parameters["vertical_samples"],
                         render=False,
@@ -807,10 +827,11 @@ class SceneService:
                         object_id=definition.get("object_id"),
                     )
             elif object_type == "clip":
-                if parameters.get("mask_kind") == "polyline_xy" and "points" in parameters:
+                if str(parameters.get("mask_kind", "")).startswith("polyline_") and "points" in parameters:
                     scene_object = self.create_mask_clip_from_polyline(
                         source_object_id,
                         parameters["points"],
+                        draw_plane=parameters.get("draw_plane", str(parameters.get("mask_kind", "polyline_xoy")).replace("polyline_", "")),
                         render=False,
                         object_id=definition.get("object_id"),
                     )
@@ -834,6 +855,7 @@ class SceneService:
                     parameters["points"],
                     top_z=parameters["top_z"],
                     bottom_z=parameters["bottom_z"],
+                    draw_plane=parameters.get("draw_plane", "xoy"),
                     line_step=parameters["line_step"],
                     vertical_samples=parameters["vertical_samples"],
                     render=False,
@@ -983,6 +1005,65 @@ class SceneService:
             raise ValueError("倾斜轴向量无效。")
         return vector / norm
 
+    def _normalize_draw_plane(self, draw_plane: str | None) -> str:
+        plane = str(draw_plane or "xoy").strip().lower()
+        if plane not in {"xoy", "xoz", "yoz"}:
+            raise ValueError("绘制平面必须是 xoy、xoz 或 yoz。")
+        return plane
+
+    def _draw_plane_axes(self, draw_plane: str) -> tuple[tuple[int, int], int]:
+        plane = self._normalize_draw_plane(draw_plane)
+        mapping = {
+            "xoy": ((0, 1), 2),
+            "xoz": ((0, 2), 1),
+            "yoz": ((1, 2), 0),
+        }
+        return mapping[plane]
+
+    def _principal_direction_on_axes(self, points: np.ndarray, axes: tuple[int, int]) -> np.ndarray:
+        coords = np.asarray(points[:, list(axes)], dtype=float)
+        centered = coords - coords.mean(axis=0, keepdims=True)
+        norm_centered = float(np.linalg.norm(centered))
+        if norm_centered <= 1e-12:
+            raise ValueError("折线点重合，无法生成剖面。")
+
+        _, singular_values, vh = np.linalg.svd(centered, full_matrices=False)
+        if singular_values.size > 0 and float(singular_values[0]) > 1e-12:
+            direction = np.asarray(vh[0], dtype=float)
+        else:
+            direction = np.asarray(coords[-1] - coords[0], dtype=float)
+
+        norm_direction = float(np.linalg.norm(direction))
+        if norm_direction <= 1e-12:
+            raise ValueError("折线方向无效，无法生成剖面。")
+        return direction / norm_direction
+
+    def _resample_polyline_points_by_axes(
+        self,
+        points: np.ndarray,
+        axes: tuple[int, int],
+        line_step: float,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        coords = np.asarray(points[:, list(axes)], dtype=float)
+        segment_lengths = np.linalg.norm(np.diff(coords, axis=0), axis=1)
+        total_length = float(segment_lengths.sum())
+        if total_length <= 1e-9:
+            raise ValueError("折线长度过短，无法生成剖面。")
+
+        cumulative = np.concatenate([[0.0], np.cumsum(segment_lengths)])
+        sample_distances = np.arange(0.0, total_length + line_step * 0.5, line_step, dtype=float)
+        if sample_distances.size == 0 or sample_distances[-1] < total_length:
+            sample_distances = np.append(sample_distances, total_length)
+
+        samples = []
+        for distance in sample_distances:
+            index = min(np.searchsorted(cumulative, distance, side="right") - 1, len(segment_lengths) - 1)
+            segment_length = max(float(segment_lengths[index]), 1e-9)
+            ratio = (float(distance) - float(cumulative[index])) / segment_length
+            point = points[index] + (points[index + 1] - points[index]) * ratio
+            samples.append(point)
+        return np.asarray(samples, dtype=float), sample_distances
+
     def _move_polyline_slice(
         self,
         slice_object_id: str,
@@ -995,21 +1076,30 @@ class SceneService:
         slice_object = self._require_object(slice_object_id)
         params = dict(slice_object.parameters or {})
         points = self._normalize_polyline_points(params.get("points", []))
-        direction_xy = self._principal_direction_xy(points)
-        line_direction = np.array([direction_xy[0], direction_xy[1], 0.0], dtype=float)
-        normal = np.cross(line_direction, np.array([0.0, 0.0, 1.0], dtype=float))
+        draw_plane = self._normalize_draw_plane(params.get("draw_plane", "xoy"))
+        line_axes, section_axis = self._draw_plane_axes(draw_plane)
+        direction_2d = self._principal_direction_on_axes(points, line_axes)
+        line_direction = np.zeros(3, dtype=float)
+        line_direction[line_axes[0]] = direction_2d[0]
+        line_direction[line_axes[1]] = direction_2d[1]
+        section_direction = np.zeros(3, dtype=float)
+        section_direction[section_axis] = 1.0
+        normal = np.cross(line_direction, section_direction)
         norm = float(np.linalg.norm(normal))
         if norm <= 1e-12:
             raise ValueError("折线方向无效，无法平移。")
         normal = normal / norm
         shifted_points = points + float(offset) * normal
 
+        section_max = float(params.get("section_max", params.get("top_z")))
+        section_min = float(params.get("section_min", params.get("bottom_z")))
         source_object = self._resolve_slice_source_object(slice_object)
         return self.create_polyline_section(
             source_object.object_id,
             shifted_points,
-            top_z=float(params["top_z"]),
-            bottom_z=float(params["bottom_z"]),
+            top_z=section_max,
+            bottom_z=section_min,
+            draw_plane=draw_plane,
             line_step=float(params["line_step"]),
             vertical_samples=int(params["vertical_samples"]),
             render=render,
@@ -1028,29 +1118,37 @@ class SceneService:
         object_id: str | None,
     ):
         axis_vector = self._parse_tilt_axis(tilt_axis)
-        # 折线剖面由 XY 轨迹定义，倾斜限定为绕 Z 轴旋转。
-        if abs(float(axis_vector[2])) < 0.999:
-            raise ValueError("折线剖面仅支持绕 Z 轴旋转。")
 
         slice_object = self._require_object(slice_object_id)
         params = dict(slice_object.parameters or {})
         points = self._normalize_polyline_points(params.get("points", []))
-        center_xy = np.mean(points[:, :2], axis=0)
+        draw_plane = self._normalize_draw_plane(params.get("draw_plane", "xoy"))
+        line_axes, section_axis = self._draw_plane_axes(draw_plane)
+        expected_axis = np.zeros(3, dtype=float)
+        expected_axis[section_axis] = 1.0
+        if abs(float(np.dot(axis_vector, expected_axis))) < 0.999:
+            axis_name = {0: "X", 1: "Y", 2: "Z"}[section_axis]
+            raise ValueError(f"当前折线剖面仅支持绕 {axis_name} 轴旋转。")
+        center_uv = np.mean(points[:, list(line_axes)], axis=0)
         angle_rad = np.deg2rad(float(angle_deg))
         cos_value = float(np.cos(angle_rad))
         sin_value = float(np.sin(angle_rad))
         rotation = np.array([[cos_value, -sin_value], [sin_value, cos_value]], dtype=float)
-        shifted_xy = points[:, :2] - center_xy[None, :]
-        rotated_xy = shifted_xy @ rotation.T + center_xy[None, :]
+        shifted_uv = points[:, list(line_axes)] - center_uv[None, :]
+        rotated_uv = shifted_uv @ rotation.T + center_uv[None, :]
         rotated_points = points.copy()
-        rotated_points[:, :2] = rotated_xy
+        rotated_points[:, line_axes[0]] = rotated_uv[:, 0]
+        rotated_points[:, line_axes[1]] = rotated_uv[:, 1]
 
+        section_max = float(params.get("section_max", params.get("top_z")))
+        section_min = float(params.get("section_min", params.get("bottom_z")))
         source_object = self._resolve_slice_source_object(slice_object)
         return self.create_polyline_section(
             source_object.object_id,
             rotated_points,
-            top_z=float(params["top_z"]),
-            bottom_z=float(params["bottom_z"]),
+            top_z=section_max,
+            bottom_z=section_min,
+            draw_plane=draw_plane,
             line_step=float(params["line_step"]),
             vertical_samples=int(params["vertical_samples"]),
             render=render,
@@ -1170,34 +1268,46 @@ class SceneService:
             voi.extend([axis_min, axis_max])
         return data.extract_subset(tuple(voi), rebase_coordinates=False)
 
-    def _mask_regular_grid_with_polygon_xy(
+    def _mask_regular_grid_with_polygon(
         self,
         data: pv.ImageData,
         polygon_points: np.ndarray,
+        *,
+        draw_plane: str,
     ) -> pv.ImageData:
         points = np.asarray(polygon_points, dtype=float)
-        polygon_xy = points[:, :2]
-        if polygon_xy.shape[0] < 3:
+        plane = self._normalize_draw_plane(draw_plane)
+        line_axes, section_axis = self._draw_plane_axes(plane)
+        polygon_2d = points[:, list(line_axes)]
+        if polygon_2d.shape[0] < 3:
             raise ValueError("掩膜边界至少需要三个点。")
-        if not np.allclose(polygon_xy[0], polygon_xy[-1]):
-            polygon_xy = np.vstack([polygon_xy, polygon_xy[0]])
+        if not np.allclose(polygon_2d[0], polygon_2d[-1]):
+            polygon_2d = np.vstack([polygon_2d, polygon_2d[0]])
 
         dims = np.asarray(data.dimensions, dtype=int)
         origin = np.asarray(data.origin, dtype=float)
         spacing = np.asarray(data.spacing, dtype=float)
-        x_axis = origin[0] + spacing[0] * np.arange(dims[0], dtype=float)
-        y_axis = origin[1] + spacing[1] * np.arange(dims[1], dtype=float)
-        gx, gy = np.meshgrid(x_axis, y_axis, indexing="ij")
-        inside_xy = self._points_inside_polygon_xy(
-            gx.ravel(order="F"),
-            gy.ravel(order="F"),
-            polygon_xy,
-        ).reshape((dims[0], dims[1]), order="F")
+        axis_u, axis_v = line_axes
+        u_axis = origin[axis_u] + spacing[axis_u] * np.arange(dims[axis_u], dtype=float)
+        v_axis = origin[axis_v] + spacing[axis_v] * np.arange(dims[axis_v], dtype=float)
+        gu, gv = np.meshgrid(u_axis, v_axis, indexing="ij")
+        inside_2d = self._points_inside_polygon_xy(
+            gu.ravel(order="F"),
+            gv.ravel(order="F"),
+            polygon_2d,
+        ).reshape((dims[axis_u], dims[axis_v]), order="F")
 
-        if not np.any(inside_xy):
+        if not np.any(inside_2d):
             raise ValueError("掩膜区域为空，请检查边界是否位于数据范围内。")
 
-        mask_points = np.repeat(inside_xy[:, :, None], dims[2], axis=2).ravel(order="F")
+        if section_axis == 2:
+            mask_points_3d = np.repeat(inside_2d[:, :, None], dims[2], axis=2)
+        elif section_axis == 1:
+            mask_points_3d = np.repeat(inside_2d[:, None, :], dims[1], axis=1)
+        else:
+            mask_points_3d = np.repeat(inside_2d[None, :, :], dims[0], axis=0)
+
+        mask_points = mask_points_3d.ravel(order="F")
         result = data.copy(deep=True)
         for name in list(result.point_data.keys()):
             values = np.asarray(result.point_data[name])
@@ -1209,13 +1319,19 @@ class SceneService:
 
         cell_dims = np.maximum(dims - 1, 0)
         if np.all(cell_dims > 0):
-            mask_cells_xy = (
-                inside_xy[:-1, :-1]
-                & inside_xy[1:, :-1]
-                & inside_xy[:-1, 1:]
-                & inside_xy[1:, 1:]
+            mask_cells_2d = (
+                inside_2d[:-1, :-1]
+                & inside_2d[1:, :-1]
+                & inside_2d[:-1, 1:]
+                & inside_2d[1:, 1:]
             )
-            mask_cells = np.repeat(mask_cells_xy[:, :, None], cell_dims[2], axis=2).ravel(order="F")
+            if section_axis == 2:
+                mask_cells_3d = np.repeat(mask_cells_2d[:, :, None], cell_dims[2], axis=2)
+            elif section_axis == 1:
+                mask_cells_3d = np.repeat(mask_cells_2d[:, None, :], cell_dims[1], axis=1)
+            else:
+                mask_cells_3d = np.repeat(mask_cells_2d[None, :, :], cell_dims[0], axis=0)
+            mask_cells = mask_cells_3d.ravel(order="F")
             for name in list(result.cell_data.keys()):
                 values = np.asarray(result.cell_data[name])
                 flat = values.reshape(-1).astype(float, copy=True)

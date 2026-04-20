@@ -198,8 +198,9 @@ class MainWindow(QMainWindow):
         self.clip_dock = self._add_dock("裁剪窗口", self.clip_panel, Qt.DockWidgetArea.RightDockWidgetArea)
         self.clip_window = self.clip_dock
 
-        self.splitDockWidget(self.property_dock, self.slice_dock, Qt.Orientation.Vertical)
-        self.splitDockWidget(self.slice_dock, self.clip_dock, Qt.Orientation.Vertical)
+        self.tabifyDockWidget(self.property_dock, self.slice_dock)
+        self.tabifyDockWidget(self.property_dock, self.clip_dock)
+        self.property_dock.raise_()
         self.slice_dock.hide()
         self.clip_dock.hide()
 
@@ -281,8 +282,6 @@ class MainWindow(QMainWindow):
         dock.show()
         dock.raise_()
         dock.activateWindow()
-        if dock.isFloating():
-            dock.raise_()
 
     def show_slice_window(self):
         self._show_dock(getattr(self, "slice_dock", None))
@@ -966,10 +965,16 @@ class MainWindow(QMainWindow):
         scene_object = self.scene_service.get_object(object_id)
         if scene_object is None:
             return
+        draw_plane = str(params.get("draw_plane") or "xoy").lower()
+        draw_value = float(params.get("draw_value", params.get("draw_z", 0.0)))
         self._polyline_owner = "slice"
         clip_bounds = np.asarray(scene_object.bounds, dtype=float) if scene_object.bounds is not None else None
-        self.plotter.set_view("top")
-        self.plotter.start_polyline_drawing(params["draw_z"], clip_bounds=clip_bounds)
+        self.plotter.set_view(self._view_name_for_draw_plane(draw_plane))
+        self.plotter.start_polyline_drawing(
+            draw_value,
+            clip_bounds=clip_bounds,
+            draw_plane=draw_plane,
+        )
         self.slice_panel.set_polyline_state(True, 0)
         self.clip_panel.set_mask_state(False, 0)
         self.statusBar().showMessage(f"已开始为 {scene_object.name} 绘制折线剖面", 3000)
@@ -983,6 +988,7 @@ class MainWindow(QMainWindow):
         if len(points) < 2:
             QMessageBox.information(self, "折线剖面", "请先在主视图中绘制至少两个折线点。")
             return
+        draw_plane = str(params.get("draw_plane") or getattr(self.plotter, "get_polyline_draw_plane", lambda: "xoy")()).lower()
         self._run_worker(
             "正在生成折线剖面...",
             lambda: self.scene_service.create_polyline_section(
@@ -990,6 +996,7 @@ class MainWindow(QMainWindow):
                 points,
                 top_z=params["top_z"],
                 bottom_z=params["bottom_z"],
+                draw_plane=draw_plane,
                 line_step=params["line_step"],
                 vertical_samples=params["vertical_samples"],
                 render=False,
@@ -1002,6 +1009,8 @@ class MainWindow(QMainWindow):
         scene_object = self.scene_service.get_object(object_id)
         if scene_object is None:
             return
+        draw_plane = str(params.get("draw_plane") or "xoy").lower()
+        draw_value = float(params.get("draw_value", params.get("draw_z", 0.0)))
         self._polyline_owner = "mask"
         clip_bounds = np.asarray(scene_object.bounds, dtype=float) if scene_object.bounds is not None else None
         grid_spec = None
@@ -1011,10 +1020,11 @@ class MainWindow(QMainWindow):
                 "spacing": tuple(float(v) for v in scene_object.data.spacing),
                 "dims": tuple(int(v) for v in scene_object.data.dimensions),
             }
-        self.plotter.set_view("top")
+        self.plotter.set_view(self._view_name_for_draw_plane(draw_plane))
         self.plotter.start_polyline_drawing(
-            params["draw_z"],
+            draw_value,
             clip_bounds=clip_bounds,
+            draw_plane=draw_plane,
             snap_to_grid=grid_spec is not None,
             grid_spec=grid_spec,
             show_grid_overlay=grid_spec is not None,
@@ -1027,16 +1037,27 @@ class MainWindow(QMainWindow):
         if len(points) < 3:
             QMessageBox.information(self, "掩膜裁剪", "请先绘制至少三个边界点。")
             return
+        draw_plane = getattr(self.plotter, "get_polyline_draw_plane", lambda: "xoy")()
         self._run_worker(
             "正在生成掩膜裁剪...",
             lambda: self.scene_service.create_mask_clip_from_polyline(
                 object_id,
                 points,
+                draw_plane=draw_plane,
                 render=False,
                 add_to_scene=False,
             ),
             self._on_mask_clip_ready,
         )
+
+    def _view_name_for_draw_plane(self, draw_plane: str) -> str:
+        plane = str(draw_plane or "xoy").strip().lower()
+        mapping = {
+            "xoy": "top",
+            "xoz": "back",
+            "yoz": "left",
+        }
+        return mapping.get(plane, "top")
 
     def _create_clip(self, object_id: str, bounds):
         self._run_worker(

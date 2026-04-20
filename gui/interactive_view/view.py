@@ -74,6 +74,7 @@ class InteractiveView(QtInteractor):
 
         # 折线剖面绘制状态
         self._polyline_drawing = False
+        self._polyline_draw_plane = "xoy"
         self._polyline_draw_z = 0.0
         self._polyline_clip_bounds: Optional[np.ndarray] = None
         self._polyline_points: list[tuple[float, float, float]] = []
@@ -432,24 +433,44 @@ class InteractiveView(QtInteractor):
     def is_polyline_drawing(self) -> bool:
         return self._polyline_drawing
 
+    def get_polyline_draw_plane(self) -> str:
+        return str(self._polyline_draw_plane)
+
     def get_polyline_draw_z(self) -> float:
         return float(self._polyline_draw_z)
 
     def get_polyline_points(self) -> list[tuple[float, float, float]]:
         return [tuple(float(value) for value in point) for point in self._polyline_points]
 
+    def _normalize_draw_plane(self, draw_plane: str | None) -> str:
+        plane = str(draw_plane or "xoy").strip().lower()
+        if plane not in {"xoy", "xoz", "yoz"}:
+            raise ValueError("绘制平面必须是 xoy、xoz 或 yoz。")
+        return plane
+
+    def _draw_plane_fixed_axis(self, draw_plane: str) -> str:
+        mapping = {"xoy": "z", "xoz": "y", "yoz": "x"}
+        return mapping[self._normalize_draw_plane(draw_plane)]
+
+    def _draw_plane_line_axes(self, draw_plane: str) -> tuple[int, int]:
+        mapping = {"xoy": (0, 1), "xoz": (0, 2), "yoz": (1, 2)}
+        return mapping[self._normalize_draw_plane(draw_plane)]
+
     def start_polyline_drawing(
         self,
         z_value: float,
         clip_bounds=None,
         *,
+        draw_plane: str = "xoy",
         snap_to_grid: bool = False,
         grid_spec: Optional[dict] = None,
         show_grid_overlay: bool = False,
     ):
+        plane = self._normalize_draw_plane(draw_plane)
         self._clear_polyline_actors()
         self._clear_polyline_grid_overlay()
         self._polyline_drawing = True
+        self._polyline_draw_plane = plane
         self._polyline_draw_z = float(z_value)
         if clip_bounds is None:
             clip_bounds = self.workspace_bounds
@@ -564,10 +585,12 @@ class InteractiveView(QtInteractor):
         self.render()
 
     def _project_polyline_point(self, screen_pos: QPoint):
-        point = CoordinateConverter.screen_to_horizontal_plane(
+        axis_name = self._draw_plane_fixed_axis(self._polyline_draw_plane)
+        point = CoordinateConverter.screen_to_axis_aligned_plane(
             self,
             screen_pos,
-            self._polyline_draw_z,
+            axis=axis_name,
+            axis_value=self._polyline_draw_z,
             clip_to_bounds=False,
         )
         if point is None:
@@ -584,7 +607,10 @@ class InteractiveView(QtInteractor):
         bounds = self._polyline_clip_bounds if self._polyline_clip_bounds is not None else self.workspace_bounds
         point_array[0] = np.clip(point_array[0], bounds[0], bounds[1])
         point_array[1] = np.clip(point_array[1], bounds[2], bounds[3])
-        point_array[2] = self._polyline_draw_z
+        point_array[2] = np.clip(point_array[2], bounds[4], bounds[5])
+        fixed_axis = self._draw_plane_fixed_axis(self._polyline_draw_plane)
+        fixed_index = {"x": 0, "y": 1, "z": 2}[fixed_axis]
+        point_array[fixed_index] = self._polyline_draw_z
         return point_array
 
     def _clear_polyline_actors(self):
@@ -651,12 +677,13 @@ class InteractiveView(QtInteractor):
         origin = self._polyline_grid_origin
         spacing = np.where(np.abs(self._polyline_grid_spacing) < 1e-12, 1.0, self._polyline_grid_spacing)
         dims = self._polyline_grid_dims
-        idx_x = int(np.rint((point_array[0] - origin[0]) / spacing[0]))
-        idx_y = int(np.rint((point_array[1] - origin[1]) / spacing[1]))
-        idx_x = int(np.clip(idx_x, 0, max(int(dims[0]) - 1, 0)))
-        idx_y = int(np.clip(idx_y, 0, max(int(dims[1]) - 1, 0)))
-        point_array[0] = origin[0] + idx_x * spacing[0]
-        point_array[1] = origin[1] + idx_y * spacing[1]
+        axis_u, axis_v = self._draw_plane_line_axes(self._polyline_draw_plane)
+        idx_u = int(np.rint((point_array[axis_u] - origin[axis_u]) / spacing[axis_u]))
+        idx_v = int(np.rint((point_array[axis_v] - origin[axis_v]) / spacing[axis_v]))
+        idx_u = int(np.clip(idx_u, 0, max(int(dims[axis_u]) - 1, 0)))
+        idx_v = int(np.clip(idx_v, 0, max(int(dims[axis_v]) - 1, 0)))
+        point_array[axis_u] = origin[axis_u] + idx_u * spacing[axis_u]
+        point_array[axis_v] = origin[axis_v] + idx_v * spacing[axis_v]
         return self._clamp_polyline_point(point_array)
 
     def _draw_polyline_grid_overlay(self):
@@ -670,41 +697,56 @@ class InteractiveView(QtInteractor):
         origin = self._polyline_grid_origin
         spacing = self._polyline_grid_spacing
         dims = self._polyline_grid_dims
-        nx = max(int(dims[0]), 1)
-        ny = max(int(dims[1]), 1)
-        x_values = origin[0] + np.arange(nx, dtype=float) * spacing[0]
-        y_values = origin[1] + np.arange(ny, dtype=float) * spacing[1]
         bounds = self._polyline_clip_bounds if self._polyline_clip_bounds is not None else self.workspace_bounds
-        x_values = x_values[(x_values >= bounds[0] - 1e-9) & (x_values <= bounds[1] + 1e-9)]
-        y_values = y_values[(y_values >= bounds[2] - 1e-9) & (y_values <= bounds[3] + 1e-9)]
-        if x_values.size == 0 or y_values.size == 0:
+        axis_u, axis_v = self._draw_plane_line_axes(self._polyline_draw_plane)
+        fixed_axis_name = self._draw_plane_fixed_axis(self._polyline_draw_plane)
+        fixed_axis = {"x": 0, "y": 1, "z": 2}[fixed_axis_name]
+
+        values_u = origin[axis_u] + np.arange(max(int(dims[axis_u]), 1), dtype=float) * spacing[axis_u]
+        values_v = origin[axis_v] + np.arange(max(int(dims[axis_v]), 1), dtype=float) * spacing[axis_v]
+        bounds_map = {
+            0: (bounds[0], bounds[1]),
+            1: (bounds[2], bounds[3]),
+            2: (bounds[4], bounds[5]),
+        }
+        u_min, u_max = bounds_map[axis_u]
+        v_min, v_max = bounds_map[axis_v]
+        values_u = values_u[(values_u >= u_min - 1e-9) & (values_u <= u_max + 1e-9)]
+        values_v = values_v[(values_v >= v_min - 1e-9) & (values_v <= v_max + 1e-9)]
+        if values_u.size == 0 or values_v.size == 0:
             return
 
         max_lines = 120
-        x_step = max(int(np.ceil(x_values.size / max_lines)), 1)
-        y_step = max(int(np.ceil(y_values.size / max_lines)), 1)
-        x_values = x_values[::x_step]
-        y_values = y_values[::y_step]
-        z = float(self._polyline_draw_z)
+        u_step = max(int(np.ceil(values_u.size / max_lines)), 1)
+        v_step = max(int(np.ceil(values_v.size / max_lines)), 1)
+        values_u = values_u[::u_step]
+        values_v = values_v[::v_step]
         points = []
         lines = []
 
-        y_min = float(y_values.min())
-        y_max = float(y_values.max())
-        for x in x_values:
+        def _make_point(u_value: float, v_value: float) -> list[float]:
+            coords = np.zeros(3, dtype=float)
+            coords[axis_u] = float(u_value)
+            coords[axis_v] = float(v_value)
+            coords[fixed_axis] = float(self._polyline_draw_z)
+            return coords.tolist()
+
+        v_start = float(values_v.min())
+        v_end = float(values_v.max())
+        for u_value in values_u:
             i0 = len(points)
-            points.append([float(x), y_min, z])
+            points.append(_make_point(float(u_value), v_start))
             i1 = len(points)
-            points.append([float(x), y_max, z])
+            points.append(_make_point(float(u_value), v_end))
             lines.extend([2, i0, i1])
 
-        x_min = float(x_values.min())
-        x_max = float(x_values.max())
-        for y in y_values:
+        u_start = float(values_u.min())
+        u_end = float(values_u.max())
+        for v_value in values_v:
             i0 = len(points)
-            points.append([x_min, float(y), z])
+            points.append(_make_point(u_start, float(v_value)))
             i1 = len(points)
-            points.append([x_max, float(y), z])
+            points.append(_make_point(u_end, float(v_value)))
             lines.extend([2, i0, i1])
 
         if not points:

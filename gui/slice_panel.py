@@ -156,20 +156,29 @@ class SlicePanel(QWidget):
 
         param_box = QGroupBox("平面参数")
         param_layout = QGridLayout(param_box)
+        self.section_plane_combo = QComboBox(self)
+        self.section_plane_combo.addItem("XOY（俯视）", "xoy")
+        self.section_plane_combo.addItem("XOZ（前视）", "xoz")
+        self.section_plane_combo.addItem("YOZ（侧视）", "yoz")
+        self.section_plane_combo.currentIndexChanged.connect(self._sync_section_range_for_draw_plane)
         self.section_top_spin = self._make_float_spinbox()
         self.section_bottom_spin = self._make_float_spinbox()
         self.section_step_spin = self._make_float_spinbox(default=25.0, minimum=0.000001)
         self.section_vertical_spin = QSpinBox(self)
         self.section_vertical_spin.setRange(2, 400)
         self.section_vertical_spin.setValue(20)
-        param_layout.addWidget(QLabel("顶部 Z"), 0, 0)
-        param_layout.addWidget(self.section_top_spin, 0, 1)
-        param_layout.addWidget(QLabel("底部 Z"), 1, 0)
-        param_layout.addWidget(self.section_bottom_spin, 1, 1)
-        param_layout.addWidget(QLabel("沿线步长"), 2, 0)
-        param_layout.addWidget(self.section_step_spin, 2, 1)
-        param_layout.addWidget(QLabel("垂向层数"), 3, 0)
-        param_layout.addWidget(self.section_vertical_spin, 3, 1)
+        self.section_top_label = QLabel("上界 Z")
+        self.section_bottom_label = QLabel("下界 Z")
+        param_layout.addWidget(QLabel("绘制平面"), 0, 0)
+        param_layout.addWidget(self.section_plane_combo, 0, 1)
+        param_layout.addWidget(self.section_top_label, 1, 0)
+        param_layout.addWidget(self.section_top_spin, 1, 1)
+        param_layout.addWidget(self.section_bottom_label, 2, 0)
+        param_layout.addWidget(self.section_bottom_spin, 2, 1)
+        param_layout.addWidget(QLabel("沿线步长"), 3, 0)
+        param_layout.addWidget(self.section_step_spin, 3, 1)
+        param_layout.addWidget(QLabel("垂向层数"), 4, 0)
+        param_layout.addWidget(self.section_vertical_spin, 4, 1)
         layout.addWidget(param_box)
 
         self.create_section_button = QPushButton("生成折线剖面")
@@ -203,6 +212,7 @@ class SlicePanel(QWidget):
             self.clear_derived_button,
             self.start_polyline_button,
             self.cancel_polyline_button,
+            self.section_plane_combo,
             self.section_top_spin,
             self.section_bottom_spin,
             self.section_step_spin,
@@ -277,13 +287,44 @@ class SlicePanel(QWidget):
         for axis, value in centers.items():
             self.orthogonal_spins[axis].setValue(float(value))
             self.origin_spins[axis].setValue(float(value))
-        self.section_top_spin.setValue(float(bounds[5]))
-        self.section_bottom_spin.setValue(float(bounds[4]))
+        self.section_plane_combo.setCurrentIndex(0)
+        self._sync_section_range_for_draw_plane()
         horizontal_span = max(abs(bounds[1] - bounds[0]), abs(bounds[3] - bounds[2]), 1.0)
-        vertical_span = max(abs(bounds[5] - bounds[4]), 1.0)
+        section_low, section_high = self._draw_plane_section_bounds(self.section_plane_combo.currentData())
+        vertical_span = max(abs(section_high - section_low), 1.0)
         self.section_step_spin.setValue(horizontal_span / 20.0)
         self.section_vertical_spin.setValue(max(10, min(80, int(round(vertical_span / max(horizontal_span / 20.0, 1.0))))))
         self._sync_step_range_to_axis()
+
+    def _draw_plane_section_bounds(self, draw_plane: str | None) -> tuple[float, float]:
+        if self._scene_object is None or self._scene_object.bounds is None:
+            return 0.0, 0.0
+        bounds = self._scene_object.bounds
+        plane = str(draw_plane or "xoy").lower()
+        if plane == "xoz":
+            return float(bounds[2]), float(bounds[3])
+        if plane == "yoz":
+            return float(bounds[0]), float(bounds[1])
+        return float(bounds[4]), float(bounds[5])
+
+    def _draw_plane_fixed_axis_label(self, draw_plane: str | None) -> str:
+        plane = str(draw_plane or "xoy").lower()
+        if plane == "xoz":
+            return "Y"
+        if plane == "yoz":
+            return "X"
+        return "Z"
+
+    def _sync_section_range_for_draw_plane(self):
+        if self._scene_object is None:
+            return
+        draw_plane = self.section_plane_combo.currentData()
+        low, high = self._draw_plane_section_bounds(draw_plane)
+        axis_label = self._draw_plane_fixed_axis_label(draw_plane)
+        self.section_top_label.setText(f"上界 {axis_label}")
+        self.section_bottom_label.setText(f"下界 {axis_label}")
+        self.section_top_spin.setValue(float(high))
+        self.section_bottom_spin.setValue(float(low))
 
     def _sync_step_range_to_axis(self):
         if self._scene_object is None:
@@ -340,9 +381,13 @@ class SlicePanel(QWidget):
     def _emit_start_polyline_drawing(self):
         if self._scene_object is None:
             return
+        draw_plane = self.section_plane_combo.currentData()
         self.polylineDrawingRequested.emit(
             self._scene_object.object_id,
-            {"draw_z": self.section_top_spin.value()},
+            {
+                "draw_plane": draw_plane,
+                "draw_value": self.section_top_spin.value(),
+            },
         )
 
     def _emit_cancel_polyline_drawing(self):
@@ -351,6 +396,7 @@ class SlicePanel(QWidget):
     def _emit_polyline_section(self):
         if self._scene_object is None:
             return
+        draw_plane = self.section_plane_combo.currentData()
         self.polylineSectionRequested.emit(
             self._scene_object.object_id,
             {
@@ -358,6 +404,7 @@ class SlicePanel(QWidget):
                 "bottom_z": self.section_bottom_spin.value(),
                 "line_step": self.section_step_spin.value(),
                 "vertical_samples": self.section_vertical_spin.value(),
+                "draw_plane": draw_plane,
             },
         )
 

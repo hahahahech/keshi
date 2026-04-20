@@ -17,9 +17,32 @@ class CoordinateConverter:
         clip_to_bounds: bool = True,
     ) -> Optional[np.ndarray]:
         """将屏幕坐标投影到指定 Z 高程的水平平面。"""
+        return CoordinateConverter.screen_to_axis_aligned_plane(
+            view,
+            screen_pos,
+            axis="z",
+            axis_value=z_value,
+            clip_to_bounds=clip_to_bounds,
+        )
+
+    @staticmethod
+    def screen_to_axis_aligned_plane(
+        view,
+        screen_pos: QPoint,
+        *,
+        axis: str,
+        axis_value: float,
+        clip_to_bounds: bool = True,
+    ) -> Optional[np.ndarray]:
+        """将屏幕坐标投影到轴对齐平面（X/Y/Z 其中一轴固定）。"""
         try:
+            axis_name = str(axis).strip().lower()
+            axis_index_map = {"x": 0, "y": 1, "z": 2}
+            if axis_name not in axis_index_map:
+                return None
+            axis_index = axis_index_map[axis_name]
+
             renderer = view.renderer
-            width = max(view.width(), 1)
             height = max(view.height(), 1)
             vtk_x = screen_pos.x()
             vtk_y = height - screen_pos.y() - 1
@@ -37,10 +60,11 @@ class CoordinateConverter:
             near_point = np.array(near_world[:3], dtype=float) / near_world[3]
             far_point = np.array(far_world[:3], dtype=float) / far_world[3]
             ray = far_point - near_point
-            if abs(ray[2]) < 1e-12:
+            ray_component = float(ray[axis_index])
+            if abs(ray_component) < 1e-12:
                 return None
 
-            factor = (float(z_value) - near_point[2]) / ray[2]
+            factor = (float(axis_value) - float(near_point[axis_index])) / ray_component
             world_pos = near_point + ray * factor
 
             if clip_to_bounds:

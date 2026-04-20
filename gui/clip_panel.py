@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
+    QComboBox,
     QFormLayout,
     QGridLayout,
     QGroupBox,
@@ -39,6 +40,10 @@ class ClipPanel(QWidget):
 
         self.mask_box = QGroupBox("不规则裁剪（按绘制边界保留内部）")
         mask_layout = QGridLayout(self.mask_box)
+        self.mask_plane_combo = QComboBox(self)
+        self.mask_plane_combo.addItem("XOY（俯视）", "xoy")
+        self.mask_plane_combo.addItem("XOZ（前视）", "xoz")
+        self.mask_plane_combo.addItem("YOZ（侧视）", "yoz")
         self.mask_state_label = QLabel("未开始绘制")
         self.mask_count_label = QLabel("当前点数：0")
         self.start_mask_button = QPushButton("开始绘制边界")
@@ -47,11 +52,13 @@ class ClipPanel(QWidget):
         self.start_mask_button.clicked.connect(self._emit_start_mask_drawing)
         self.cancel_mask_button.clicked.connect(self._emit_cancel_mask_drawing)
         self.apply_mask_button.clicked.connect(self._emit_mask_clip)
-        mask_layout.addWidget(self.mask_state_label, 0, 0, 1, 2)
-        mask_layout.addWidget(self.mask_count_label, 1, 0, 1, 2)
-        mask_layout.addWidget(self.start_mask_button, 2, 0)
-        mask_layout.addWidget(self.cancel_mask_button, 2, 1)
-        mask_layout.addWidget(self.apply_mask_button, 3, 0, 1, 2)
+        mask_layout.addWidget(QLabel("绘制平面"), 0, 0)
+        mask_layout.addWidget(self.mask_plane_combo, 0, 1)
+        mask_layout.addWidget(self.mask_state_label, 1, 0, 1, 2)
+        mask_layout.addWidget(self.mask_count_label, 2, 0, 1, 2)
+        mask_layout.addWidget(self.start_mask_button, 3, 0)
+        mask_layout.addWidget(self.cancel_mask_button, 3, 1)
+        mask_layout.addWidget(self.apply_mask_button, 4, 0, 1, 2)
         layout.addWidget(self.mask_box)
 
         actions_layout = QHBoxLayout()
@@ -91,11 +98,26 @@ class ClipPanel(QWidget):
         self.cancel_mask_button.setEnabled(self._scene_object is not None and (drawing or point_count > 0))
         self.apply_mask_button.setEnabled(self._scene_object is not None and point_count >= 3)
 
+    def _mask_draw_value_from_bounds(self, draw_plane: str | None) -> float:
+        if self._scene_object is None or self._scene_object.bounds is None:
+            return 0.0
+        bounds = self._scene_object.bounds
+        plane = str(draw_plane or "xoy").lower()
+        if plane == "xoz":
+            return float(bounds[3])
+        if plane == "yoz":
+            return float(bounds[1])
+        return float(bounds[5])
+
     def _emit_start_mask_drawing(self):
         if self._scene_object is None:
             return
-        draw_z = float(self._scene_object.bounds[5]) if self._scene_object.bounds is not None else 0.0
-        self.maskDrawingStartRequested.emit(self._scene_object.object_id, {"draw_z": draw_z})
+        draw_plane = self.mask_plane_combo.currentData()
+        draw_value = self._mask_draw_value_from_bounds(draw_plane)
+        self.maskDrawingStartRequested.emit(
+            self._scene_object.object_id,
+            {"draw_plane": draw_plane, "draw_value": draw_value},
+        )
 
     def _emit_cancel_mask_drawing(self):
         self.maskDrawingCancelRequested.emit()

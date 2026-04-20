@@ -39,7 +39,7 @@ class InteractiveViewPolylineTests(unittest.TestCase):
             view.add_polyline_point((5.0, 25.0, 12.0))
 
             with patch(
-                "gui.interactive_view.view.CoordinateConverter.screen_to_horizontal_plane",
+                "gui.interactive_view.view.CoordinateConverter.screen_to_axis_aligned_plane",
                 return_value=np.array([18.0, 42.0, 12.0], dtype=float),
             ) as mock_project:
                 view.handle_polyline_hover(QPoint(120, 80))
@@ -59,12 +59,30 @@ class InteractiveViewPolylineTests(unittest.TestCase):
             view.start_polyline_drawing(12.0, clip_bounds=bounds)
 
             with patch(
-                "gui.interactive_view.view.CoordinateConverter.screen_to_horizontal_plane",
+                "gui.interactive_view.view.CoordinateConverter.screen_to_axis_aligned_plane",
                 return_value=np.array([-8.0, 36.0, 12.0], dtype=float),
             ) as mock_project:
                 view.handle_polyline_click(QPoint(220, 180))
 
             self.assertEqual(view.get_polyline_points(), [(0.0, 30.0, 12.0)])
+            self.assertFalse(mock_project.call_args.kwargs.get("clip_to_bounds", True))
+        finally:
+            view.close()
+
+    def test_polyline_click_supports_xoz_plane(self):
+        view = InteractiveView()
+        try:
+            bounds = np.array([0.0, 10.0, 20.0, 30.0, -50.0, 50.0], dtype=float)
+            view.start_polyline_drawing(25.0, clip_bounds=bounds, draw_plane="xoz")
+
+            with patch(
+                "gui.interactive_view.view.CoordinateConverter.screen_to_axis_aligned_plane",
+                return_value=np.array([-8.0, 99.0, 88.0], dtype=float),
+            ) as mock_project:
+                view.handle_polyline_click(QPoint(220, 180))
+
+            self.assertEqual(view.get_polyline_points(), [(0.0, 25.0, 50.0)])
+            self.assertEqual(mock_project.call_args.kwargs.get("axis"), "y")
             self.assertFalse(mock_project.call_args.kwargs.get("clip_to_bounds", True))
         finally:
             view.close()

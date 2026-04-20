@@ -43,6 +43,25 @@ class MainWindowDockTests(unittest.TestCase):
         finally:
             window.close()
 
+    def test_show_slice_window_keeps_main_window_size(self):
+        window = MainWindow()
+        try:
+            window.resize(1280, 820)
+            window.show()
+            self.app.processEvents()
+            before = window.size()
+            window.show_slice_window()
+            self.app.processEvents()
+            after = window.size()
+            self.assertEqual((after.width(), after.height()), (before.width(), before.height()))
+
+            window.show_clip_window()
+            self.app.processEvents()
+            clip_after = window.size()
+            self.assertEqual((clip_after.width(), clip_after.height()), (before.width(), before.height()))
+        finally:
+            window.close()
+
     def test_start_polyline_drawing_switches_to_top_view_and_uses_object_bounds(self):
         window = MainWindow()
         try:
@@ -63,6 +82,29 @@ class MainWindowDockTests(unittest.TestCase):
                 np.asarray(kwargs["clip_bounds"], dtype=float),
                 np.asarray(scene_object.bounds, dtype=float),
             )
+        finally:
+            window.close()
+
+    def test_start_polyline_drawing_supports_xoz_plane(self):
+        window = MainWindow()
+        try:
+            dataset = window.import_service.load_dataset("sample_data/synthetic_inversion_grid.csv")
+            scene_object = window.scene_service.add_dataset(dataset, render=False)
+
+            with patch.object(window.plotter, "set_view") as mock_set_view, patch.object(
+                window.plotter,
+                "start_polyline_drawing",
+            ) as mock_start_polyline:
+                window._start_polyline_drawing(
+                    scene_object.object_id,
+                    {"draw_plane": "xoz", "draw_value": float(scene_object.bounds[3])},
+                )
+
+            mock_set_view.assert_called_once_with("back")
+            mock_start_polyline.assert_called_once()
+            args, kwargs = mock_start_polyline.call_args
+            self.assertEqual(float(args[0]), float(scene_object.bounds[3]))
+            self.assertEqual(kwargs.get("draw_plane"), "xoz")
         finally:
             window.close()
 
@@ -263,7 +305,13 @@ class MainWindowDockTests(unittest.TestCase):
             ) as mock_polyline_section, patch.object(window, "_run_worker") as mock_run_worker:
                 window._create_polyline_section(
                     source.object_id,
-                    {"top_z": 0.0, "bottom_z": -200.0, "line_step": 20.0, "vertical_samples": 16},
+                    {
+                        "top_z": 0.0,
+                        "bottom_z": -200.0,
+                        "line_step": 20.0,
+                        "vertical_samples": 16,
+                        "draw_plane": "xoy",
+                    },
                 )
                 self.assertEqual(mock_run_worker.call_count, 1)
                 _, worker_func, _ = mock_run_worker.call_args[0]
@@ -273,6 +321,7 @@ class MainWindowDockTests(unittest.TestCase):
                     points,
                     top_z=0.0,
                     bottom_z=-200.0,
+                    draw_plane="xoy",
                     line_step=20.0,
                     vertical_samples=16,
                     render=False,

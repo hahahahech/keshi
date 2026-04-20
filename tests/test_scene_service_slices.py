@@ -74,6 +74,34 @@ class SceneServiceSliceTests(unittest.TestCase):
         self.assertGreater(derived.data.n_cells, 0)
         self.assertIn("density_true", list(derived.data.point_data.keys()))
 
+    def test_polyline_section_supports_xoz_plane(self):
+        dataset = self.import_service.load_dataset("sample_data/synthetic_inversion_grid.csv")
+        scene_object = self.scene_service.add_dataset(dataset, render=False)
+        bounds = scene_object.bounds
+        y_value = float(bounds[3])
+
+        derived = self.scene_service.create_polyline_section(
+            scene_object.object_id,
+            [
+                (bounds[0], y_value, bounds[5]),
+                ((bounds[0] + bounds[1]) / 2.0, y_value, (bounds[4] + bounds[5]) / 2.0),
+                (bounds[1], y_value, bounds[4]),
+            ],
+            top_z=bounds[3],
+            bottom_z=bounds[2],
+            draw_plane="xoz",
+            line_step=60.0,
+            vertical_samples=16,
+            render=False,
+            add_to_scene=False,
+        )
+
+        self.assertEqual(derived.object_type, "slice")
+        self.assertEqual(derived.parameters.get("kind"), "polyline")
+        self.assertEqual(derived.parameters.get("draw_plane"), "xoz")
+        self.assertGreater(derived.data.n_points, 0)
+        self.assertGreater(derived.data.n_cells, 0)
+
     def test_move_polyline_slice_offsets_polyline_points(self):
         dataset = self.import_service.load_dataset("sample_data/synthetic_inversion_grid.csv")
         source = self.scene_service.add_dataset(dataset, render=False)
@@ -237,6 +265,36 @@ class SceneServiceSliceTests(unittest.TestCase):
         self.assertEqual(derived.object_type, "clip")
         self.assertTrue(derived.dataset.is_regular_grid)
         self.assertEqual(derived.render_mode, "volume")
+        scalar_name = derived.active_scalar
+        values = np.asarray(derived.data.point_data[scalar_name], dtype=float)
+        self.assertTrue(np.isnan(values).any())
+        self.assertTrue(np.isfinite(values).any())
+
+    def test_mask_clip_from_polyline_supports_yoz_plane(self):
+        dataset = self.import_service.load_dataset("sample_data/synthetic_inversion_grid.csv")
+        scene_object = self.scene_service.add_dataset(dataset, render=False)
+        bounds = scene_object.bounds
+        x_value = float(bounds[1])
+        mid_y = (bounds[2] + bounds[3]) / 2.0
+        mid_z = (bounds[4] + bounds[5]) / 2.0
+        points = [
+            (x_value, bounds[2], bounds[5]),
+            (x_value, mid_y, bounds[5]),
+            (x_value, mid_y, mid_z),
+            (x_value, bounds[2], mid_z),
+        ]
+
+        derived = self.scene_service.create_mask_clip_from_polyline(
+            scene_object.object_id,
+            points,
+            draw_plane="yoz",
+            render=False,
+            add_to_scene=False,
+        )
+
+        self.assertEqual(derived.object_type, "clip")
+        self.assertTrue(derived.dataset.is_regular_grid)
+        self.assertEqual(derived.parameters.get("draw_plane"), "yoz")
         scalar_name = derived.active_scalar
         values = np.asarray(derived.data.point_data[scalar_name], dtype=float)
         self.assertTrue(np.isnan(values).any())
