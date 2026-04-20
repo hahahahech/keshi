@@ -134,6 +134,194 @@ class ImportService:
             import_spec=spec,
         )
 
+    def inspect_text_schema(self, file_path: str) -> dict[str, Any]:
+        lines = self._read_text_lines(file_path)
+        if not lines:
+            raise ValueError("文本文件为空。")
+        delimiter = self._detect_delimiter(lines[0])
+        first_tokens = self._split_line(lines[0], delimiter)
+        has_header = not self._tokens_are_numeric(first_tokens)
+        if has_header:
+            headers = [token.strip() or f"column_{index}" for index, token in enumerate(first_tokens)]
+        else:
+            headers = [f"column_{index}" for index in range(len(first_tokens))]
+        return {
+            "delimiter": delimiter,
+            "has_header": has_header,
+            "headers": headers,
+        }
+
+    def load_well_log_dataset(
+        self,
+        file_path: str,
+        import_options: dict[str, Any],
+    ) -> BaseDataset:
+        schema = self.inspect_text_schema(file_path)
+        delimiter = str(import_options.get("delimiter") or schema["delimiter"])
+        has_header = bool(import_options.get("has_header", schema["has_header"]))
+        lines = self._read_text_lines(file_path)
+        if not lines:
+            raise ValueError("文本文件为空。")
+
+        if has_header:
+            headers = self._split_line(lines[0], delimiter)
+            data_lines = lines[1:]
+        else:
+            first_tokens = self._split_line(lines[0], delimiter)
+            headers = [f"column_{index}" for index in range(len(first_tokens))]
+            data_lines = lines
+        if not headers:
+            raise ValueError("未识别到可用列。")
+
+        x_column = str(import_options.get("x_column") or "").strip()
+        y_column = str(import_options.get("y_column") or "").strip()
+        z_column = str(import_options.get("z_column") or "").strip()
+        depth_column = str(import_options.get("depth_column") or "").strip()
+        well_id_column = str(import_options.get("well_id_column") or "").strip()
+        curve_columns = [str(name).strip() for name in (import_options.get("curve_columns") or []) if str(name).strip()]
+        depth_positive_down = bool(import_options.get("depth_positive_down", True))
+        z_reference = float(import_options.get("z_reference", 0.0))
+        dataset_name = str(import_options.get("name") or Path(file_path).stem).strip() or Path(file_path).stem
+
+        if x_column not in headers or y_column not in headers:
+            raise ValueError("测井导入需要有效的 X/Y 列映射。")
+        if z_column and z_column not in headers:
+            raise ValueError("所选 Z 列不存在。")
+        if depth_column and depth_column not in headers:
+            raise ValueError("所选深度列不存在。")
+        if not z_column and not depth_column:
+            raise ValueError("请至少选择 Z 列或深度列。")
+        if well_id_column and well_id_column not in headers:
+            raise ValueError("所选井号列不存在。")
+
+        exclude_columns = {x_column, y_column, z_column, depth_column, well_id_column}
+        if not curve_columns:
+            curve_columns = [header for header in headers if header not in exclude_columns]
+
+        rows: list[dict[str, Any]] = []
+        for line_number, line in enumerate(data_lines, start=2 if has_header else 1):
+            tokens = self._split_line(line, delimiter)
+            if len(tokens) < len(headers):
+                continue
+            row = {headers[index]: tokens[index] for index in range(len(headers))}
+            try:
+                x = float(row[x_column])
+                y = float(row[y_column])
+                if z_column:
+                    z = float(row[z_column])
+                    depth = float(row[depth_column]) if depth_column else np.nan
+                    order_value = z
+                else:
+                    depth = float(row[depth_column])
+                    sign = -1.0 if depth_positive_down else 1.0
+                    z = z_reference + sign * depth
+                    order_value = depth
+            except ValueError as exc:
+                raise ValueError(f"第 {line_number} 行坐标/深度字段不是有效数字。") from exc
+
+            well_id = row[well_id_column] if well_id_column else "__well__"
+            if not well_id:
+                well_id = "__well__"
+
+            curve_values: dict[str, float] = {}
+            for column in curve_columns:
+                if column not in row:
+                    continue
+                value = row[column]
+                if value == "":
+                    curve_values[column] = np.nan
+                    continue
+                try:
+                    curve_values[column] = float(value)
+                except ValueError:
+                    curve_values[column] = np.nan
+
+            rows.append(
+                {
+                    "well_id": str(well_id),
+                    "x": float(x),
+                    "y": float(y),
+                    "z": float(z),
+                    "depth": float(depth) if np.isfinite(depth) else np.nan,
+                    "order_value": float(order_value),
+                    "curves": curve_values,
+                }
+            )
+
+        if not rows:
+            raise ValueError("测井文件中没有可用的数据行。")
+
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            grouped.setdefault(row["well_id"], []).append(row)
+
+        points: list[list[float]] = []
+        depth_values: list[float] = []
+        well_indices: list[int] = []
+        curves_by_name: dict[str, list[float]] = {name: [] for name in curve_columns}
+        line_cells: list[int] = []
+        sorted_well_ids = sorted(grouped.keys())
+
+        for well_index, well_id in enumerate(sorted_well_ids):
+            samples = grouped[well_id]
+            samples.sort(key=lambda item: (item["order_value"], item["z"]))
+            count = len(samples)
+            point_start = len(points)
+            if count >= 2:
+                line_cells.extend([count, *range(point_start, point_start + count)])
+            for sample in samples:
+                points.append([sample["x"], sample["y"], sample["z"]])
+                depth_values.append(sample["depth"])
+                well_indices.append(well_index)
+                for curve_name in curve_columns:
+                    curves_by_name[curve_name].append(sample["curves"].get(curve_name, np.nan))
+
+        if not points:
+            raise ValueError("测井文件中没有可用的数据点。")
+
+        poly = pv.PolyData()
+        poly.points = np.asarray(points, dtype=float)
+        if line_cells:
+            poly.lines = np.asarray(line_cells, dtype=np.int64)
+        else:
+            verts = np.empty(len(points) * 2, dtype=np.int64)
+            verts[0::2] = 1
+            verts[1::2] = np.arange(len(points), dtype=np.int64)
+            poly.verts = verts
+
+        poly.point_data["well_index"] = np.asarray(well_indices, dtype=int)
+        poly.point_data["depth"] = np.asarray(depth_values, dtype=float)
+        for curve_name, values in curves_by_name.items():
+            poly.point_data[curve_name] = np.asarray(values, dtype=float)
+
+        metadata = DatasetMetadata(
+            source_path=file_path,
+            source_name=dataset_name,
+            dataset_type="well_log",
+            source_schema={
+                "loader": "well_log",
+                "delimiter": delimiter,
+                "has_header": has_header,
+                "headers": headers,
+                "well_ids": sorted_well_ids,
+            },
+        )
+        dataset = create_dataset_from_pyvista(
+            poly,
+            source_path=file_path,
+            name=dataset_name,
+            metadata=metadata,
+            import_spec=None,
+        )
+        preferred_scalar = str(import_options.get("active_scalar") or "").strip()
+        if preferred_scalar and preferred_scalar in dataset.scalar_names:
+            dataset.set_active_scalar(preferred_scalar)
+        elif curve_columns:
+            first_scalar = curve_columns[0]
+            if first_scalar in dataset.scalar_names:
+                dataset.set_active_scalar(first_scalar)
+        return dataset
+
     def _wrap_loaded_dataset(
         self,
         mesh: pv.DataSet,

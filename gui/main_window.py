@@ -10,7 +10,7 @@ import numpy as np
 import pyvista as pv
 from PyQt6.QtCore import Qt, QThreadPool, QTimer
 from PyQt6.QtGui import QAction
-from PyQt6.QtWidgets import QFileDialog, QDockWidget, QInputDialog, QMainWindow, QMessageBox
+from PyQt6.QtWidgets import QFileDialog, QDialog, QDockWidget, QInputDialog, QMainWindow, QMessageBox
 
 from gui.SceneManagerPanel import SceneManagerPanel
 from gui.axis_scale_component import AxisScaleComponent
@@ -21,6 +21,7 @@ from gui.property_panel import PropertyPanel
 from gui.slice_panel import SlicePanel
 from gui.task_runner import Worker
 from gui.view_axes_2d import ViewAxes2D
+from gui.well_log_import_dialog import WellLogImportDialog
 from services import ImportService, ProjectService, SceneService
 
 
@@ -57,6 +58,7 @@ class MainWindow(QMainWindow):
         file_menu = menubar.addMenu("文件")
         actions = [
             ("导入数据", self.import_data),
+            ("导入测井数据", self.import_well_log_data),
             ("打开工程", self.open_project),
             ("保存工程", self.save_project),
             ("导出截图", self.export_screenshot),
@@ -245,6 +247,7 @@ class MainWindow(QMainWindow):
     def _on_toolbar_action(self, action_name: str):
         action_map = {
             "import_data": self.import_data,
+            "import_well_log_data": self.import_well_log_data,
             "open_project": self.open_project,
             "save_project": self.save_project,
             "reset_view": self.reset_view,
@@ -491,6 +494,21 @@ class MainWindow(QMainWindow):
             self._on_import_finished,
         )
 
+    def import_well_log_data(self):
+        dialog = WellLogImportDialog(self.import_service, self)
+        if dialog.exec() != int(QDialog.DialogCode.Accepted):
+            return
+        payload = dialog.get_import_payload()
+        if not payload:
+            return
+        file_path = str(payload["file_path"])
+        import_spec = dict(payload["import_spec"])
+        self._run_worker(
+            "正在导入测井数据...",
+            lambda: self.import_service.load_well_log_dataset(file_path, import_spec),
+            self._on_well_log_import_finished,
+        )
+
     def _on_import_finished(self, result):
         imported, failures = result
         added_objects = []
@@ -512,6 +530,33 @@ class MainWindow(QMainWindow):
             f"成功导入 {len(added_objects)} 个数据集。",
             4000,
         )
+
+    def _on_well_log_import_finished(self, dataset):
+        reference_object = self._pick_well_reference_object()
+        mapped_to_reference = False
+        if (
+            reference_object is not None
+            and self._is_bounds_far_from_scene(dataset.bounds, [reference_object.bounds])
+        ):
+            mapped_to_reference = self._remap_dataset_points_to_bounds(dataset, reference_object.bounds)
+
+        scene_object = self.scene_service.add_dataset(
+            dataset,
+            render=True,
+            name=dataset.name,
+            object_type="dataset",
+        )
+        self.scene_manager.add_object(scene_object)
+        self.on_object_selected(scene_object.object_id)
+        self._fit_scene_to_objects()
+        if mapped_to_reference and reference_object is not None:
+            self.statusBar().showMessage(
+                f"测井数据导入成功，已映射到 {reference_object.name} 的坐标范围。",
+                5000,
+            )
+        else:
+            self.statusBar().showMessage(f"测井数据导入成功：{scene_object.name}", 4000)
+        self.plotter.render()
 
     def open_project(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -779,11 +824,12 @@ class MainWindow(QMainWindow):
         for scene_object in self.scene_service.all_objects():
             if scene_object.dataset is not None:
                 bounds_array.append(scene_object.bounds)
+        self._focus_scene_bounds(bounds_array)
 
+    def _focus_scene_bounds(self, bounds_array):
         if not bounds_array:
             self.plotter.set_workspace_bounds(self.initial_workspace_bounds.copy())
             return
-
         bounds = np.array(bounds_array, dtype=float)
         mins = np.min(bounds[:, [0, 2, 4]], axis=0)
         maxs = np.max(bounds[:, [1, 3, 5]], axis=0)
@@ -801,6 +847,86 @@ class MainWindow(QMainWindow):
             dtype=float,
         )
         self.plotter.set_workspace_bounds(workspace_bounds)
+        self.plotter.reset_camera()
+
+    def _is_bounds_far_from_scene(self, bounds, other_bounds_list) -> bool:
+        if not other_bounds_list:
+            return False
+        current = np.asarray(bounds, dtype=float).reshape(-1)
+        if current.size != 6:
+            return False
+        cx = float((current[0] + current[1]) * 0.5)
+        cy = float((current[2] + current[3]) * 0.5)
+        current_scale = max(float(current[1] - current[0]), float(current[3] - current[2]), 1.0)
+
+        for other in other_bounds_list:
+            candidate = np.asarray(other, dtype=float).reshape(-1)
+            if candidate.size != 6:
+                continue
+            overlap_x = not (current[1] < candidate[0] or candidate[1] < current[0])
+            overlap_y = not (current[3] < candidate[2] or candidate[3] < current[2])
+            if overlap_x and overlap_y:
+                return False
+
+            ox = float((candidate[0] + candidate[1]) * 0.5)
+            oy = float((candidate[2] + candidate[3]) * 0.5)
+            distance = float(np.hypot(cx - ox, cy - oy))
+            other_scale = max(float(candidate[1] - candidate[0]), float(candidate[3] - candidate[2]), 1.0)
+            if distance <= max(current_scale, other_scale) * 5.0:
+                return False
+        return True
+
+    def _pick_well_reference_object(self):
+        selected = self._get_selected_scene_object()
+        if selected is not None and not self._is_well_log_scene_object(selected):
+            return selected
+
+        dataset_candidates = []
+        for scene_object in self.scene_service.all_objects():
+            if scene_object.dataset is None:
+                continue
+            if self._is_well_log_scene_object(scene_object):
+                continue
+            if scene_object.object_type == "dataset":
+                dataset_candidates.append(scene_object)
+        if dataset_candidates:
+            return dataset_candidates[0]
+        return None
+
+    def _is_well_log_scene_object(self, scene_object) -> bool:
+        try:
+            schema = dict(getattr(scene_object.dataset, "source_schema", {}) or {})
+        except Exception:
+            return False
+        return str(schema.get("loader") or "").lower() == "well_log"
+
+    def _remap_dataset_points_to_bounds(self, dataset, target_bounds) -> bool:
+        data = getattr(dataset, "data", None)
+        if data is None or not hasattr(data, "points"):
+            return False
+        points = np.asarray(data.points, dtype=float)
+        if points.ndim != 2 or points.shape[0] == 0 or points.shape[1] < 3:
+            return False
+
+        source_bounds = np.asarray(dataset.bounds, dtype=float).reshape(-1)
+        target = np.asarray(target_bounds, dtype=float).reshape(-1)
+        if source_bounds.size != 6 or target.size != 6:
+            return False
+
+        mapped = points.copy()
+        for axis in range(3):
+            src_min = float(min(source_bounds[axis * 2], source_bounds[axis * 2 + 1]))
+            src_max = float(max(source_bounds[axis * 2], source_bounds[axis * 2 + 1]))
+            dst_min = float(min(target[axis * 2], target[axis * 2 + 1]))
+            dst_max = float(max(target[axis * 2], target[axis * 2 + 1]))
+            src_span = src_max - src_min
+            if abs(src_span) <= 1e-12:
+                mapped[:, axis] = (dst_min + dst_max) * 0.5
+            else:
+                mapped[:, axis] = (mapped[:, axis] - src_min) * (dst_max - dst_min) / src_span + dst_min
+
+        data.points = mapped
+        return True
 
     def _get_selected_scene_object(self):
         if not self.selected_object_id:

@@ -107,9 +107,13 @@ class AxisScaleComponent:
             main_line,
             color='darkgray',      # 更深的颜色，作为脊柱
             line_width=5,          # 最粗的线宽，作为尺子骨架
-            name=f'{axis_name}_axis_main'
-            # 完全不设置任何渲染参数，让PyVista自动使用线框模式
-            # 这样就不会把线段误认为表面，端点自然消失
+            style='wireframe',
+            render_points_as_spheres=False,
+            point_size=0,
+            show_vertices=False,
+            render_lines_as_tubes=False,
+            pickable=False,
+            name=f'{axis_name}_axis_main',
         )
         self.scale_actors[f'{axis_name}_axis_main'] = main_actor
         return main_actor
@@ -184,23 +188,19 @@ class AxisScaleComponent:
         points = np.array(points)
         mesh = pv.PolyData(points)
         mesh.lines = np.array(line_indices)
-        
-        # 尝试通过设置顶点大小为0来隐藏端点
-        try:
-            # 设置所有顶点大小为0
-            vertex_sizes = np.zeros(len(points))
-            mesh.point_data['point_size'] = vertex_sizes
-        except:
-            pass
-        
-        # 彻底回归线框模式 - 让PyVista自动推断为线条
+
+        # 强制仅渲染线单元，关闭一切点可视化
         actor = self.plotter.add_mesh(
             mesh,
             color=color,
             line_width=line_width,
-            name=name
-            # 完全不设置任何渲染参数，让PyVista自动使用线框模式
-            # 这样就不会把线段误认为表面，端点自然消失
+            style='wireframe',
+            render_points_as_spheres=False,
+            point_size=0,
+            show_vertices=False,
+            render_lines_as_tubes=False,
+            pickable=False,
+            name=name,
         )
         return actor
     
